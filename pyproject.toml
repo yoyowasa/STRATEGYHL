@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "hlmm"
+version = "0.1.0"
+description = "HLMM command line skeleton"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+PyYAML = "^6.0.2"
+pyarrow = "^17.0.0"
+zstandard = "^0.23.0"
+numpy = "^2.1.0"
+matplotlib = "^3.9.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+
+[tool.poetry.scripts]
+hlmm = "hlmm.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]

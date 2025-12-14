@@ -1,0 +1,10 @@
+mode: research
+paths:
+  data_dir: data/raw
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: baseline
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10

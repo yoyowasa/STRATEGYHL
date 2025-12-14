@@ -1,0 +1,33 @@
+# プロジェクト概要
+- Poetry 管理の Python パッケージ `hlmm`。エントリポイントは `hlmm/cli/__init__.py`、`poetry run hlmm --help` または `python -m hlmm --help` で起動。
+- Python 3.11 以上を想定。開発依存に pytest のみ。
+- ディレクトリ骨格: `hlmm/{cli,config,io,data,features,research,mm}` と `tests/`。各サブパッケージはプレースホルダー。
+- CLI は argparse を使用。`--config` で YAML を指定し、`--print-config` で正規化結果を YAML で表示する。`--version` はインストール済みのバージョンが無ければ `0.0.0` を返す。
+- 設定スキーマ: `mode` は `research|mm_sim|mm_replay` のいずれか、`paths.data_dir` は必須。`paths.output_dir/log_dir` と `strategy`（name, risk_limit, leverage, max_positions, extra_params）はデフォルト補完あり。`hlmm/config/config.py` を参照。
+- 丸めユーティリティ: `hlmm/mm/rounding.py` に `round_price`（5有効桁・最大小数桁6）、`round_size`（指定小数桁へ四捨五入）を実装。
+- イベントモデル: `hlmm/data/events.py` に WSイベントのデータクラス（Book/Bbo/Trade/AssetCtx/UserFill/UserFunding）。全て `event_id` と `recv_ts_ms` を持ち、`dedupe_key` は `event_id` を返す。`px/sz` などは Decimal に正規化し、必須フィールド欠落や型不正で例外。
+- 生ログ→typed→保存: `hlmm/io/ingest.py` に JSONL(.zst) パーサー（channel: l2Book/bbo/trades/activeAssetCtx/userFills/userFundings）、イベント化、重複排除（Trade は `symbol:trade_id:ts_ms`）、Parquet 書き出し（pyarrow）。決定的な順序で出力。
+- ブロックアライン: `hlmm/features/align.py` で BookEvent をクロックにし、Trade を区間バケット化、最新の AssetCtx/Bbo を保持しつつ特徴を block 行にし、Parquet 出力。`missing_trades`/`missing_book` で欠損フラグを付与し、未来時刻を参照しない。
+- 特徴量計算: `hlmm/features/compute.py` で mid/spread/microprice/imbalance/signed_volume/basis_bps を計算し、欠損時は NaN+missingフラグを立てる。決定的な並びで `features.parquet` 保存可能。
+- データセット生成: `hlmm/research/dataset.py` で features.parquet から目的変数 y_ret(H)/y_markout(H) を生成し、時系列で train/valid/test を固定分割。`hlmm dataset --features ...` コマンドで dataset.parquet と splits.json を一括生成（デフォルト H=1,5,15,60 秒）。
+- エッジスクリーニング: `hlmm/research/edge.py` で単変量IC/効果量を算出し Newey-West で自己相関補正、閾値で keep/drop 判定。`hlmm edge --dataset dataset.parquet --splits splits.json --out-dir edge_output` で edge_report.json と edge_plots/*.png を決定的に出力。
+- 簡易MMシミュレーション: `hlmm/mm/sim.py` に Bookクロックのイベントループを実装。`simulate_blocks` は state更新→戦略→注文→fill→台帳更新の順で進み、post-onlyクロス検知/ポジション上限/手数料・リベート/ファンディングを反映。フィルモデル upper/lower を選択でき、lower は alpha/nprints で控えめ設定。`run_mm_sim` で blocks.parquet から `sim_trades.parquet`、`ledger.parquet`、`orders.parquet` を出力。CLI: `hlmm mm-sim --blocks blocks.parquet --out-dir mm_sim_out`.
+- 戦略: `hlmm/mm/strategy.py` に Strategy1（ベーススプレッド + 在庫スキュー）を実装。`decide_orders` が state→bid/ask の意図注文を決定的に返す。パラメータは `StrategyParams`（base_spread_bps/base_size/inventory_skew_bps/inventory_target/max_abs_position/strategy_variant）。
+- レポート: `hlmm/research/report.py` で ledger/trades（任意でfeatures）から metrics.json（fill率/realized spread/markout/在庫統計/fee分解）と equity/inventory の PNG を `reports/<run_id>/` に出力。
+- Hyperliquidキャンドル取得: `scripts/fetch_hl_candles.py` が `/info candleSnapshot` を取得し `data/hyperliquid/candles/` に保存（spotMeta は `data/hyperliquid/meta/spotMeta.json`）。45m は `scripts/derive_hl_candles.py` で 15m から集約。
+
+# テスト/動作確認
+- `poetry install` 後に `poetry run pytest`。スモーク + 設定系テスト (`tests/test_smoke_cli.py`, `tests/test_config_validation.py`, `tests/test_config_normalize.py`) が通ることを確認。
+- 丸めテスト: `tests/test_rounding_price.py`, `tests/test_rounding_size.py` が 5有効桁・小数桁上限とサイズ丸めをカバー。
+- イベントテスト: `tests/test_event_schema.py` が必須フィールド欠落・Decimal変換失敗を検証。
+- パーサーテスト: `tests/test_dedupe_trades.py`（重複 Trade が 1 件へ収束）、`tests/test_parse_roundtrip.py`（既知 JSON → イベント → dict → Parquet の決定性）を追加。
+- ブロックテスト: `tests/test_no_lookahead.py`（ブロック特徴が未来トレードを参照しない）、`tests/test_monotonic_time.py`（block 時刻の単調増加と決定的並び）。
+- 特徴テスト: `tests/test_features_toy_book.py`（toy板で mid/spread/microprice/imbalance 一致）、`tests/test_features_signed_volume.py`（符号付き出来高・basis_bps 一致）。
+- 目的変数テスト: `tests/test_targets_alignment.py` が y_markout の未来参照ずれ無しを検証。
+- エッジテスト: `tests/test_edge_runner_deterministic.py` が同入力でレポートとプロットが決定的に一致することを検証。
+- シムテスト: `tests/test_engine_runs_toy.py` が toy blocks でエンジンが完走し、出力 Parquet にトレードと台帳が書き出されることを確認。
+- ブローカ/PnLテスト: `tests/test_pnl_identity.py`（total=price_pnl+fees+rebates+funding+unrealized 恒等）、`tests/test_position_limits.py`（ポジション上限とpost-onlyクロス検知）。
+- フィルモデルテスト: `tests/test_fill_monotonic.py`（upper>=lower）、`tests/test_fill_price_side.py`（side/価格条件を満たす約定のみ使用）。
+- 戦略テスト: `tests/test_strategy_deterministic.py`（決定性）、`tests/test_inventory_skew_direction.py`（在庫スキュー方向）。
+- レポートテスト: `tests/test_metrics_schema.py`（必須キー確認）、`tests/test_report_artifacts_exist.py`（metrics.jsonとPNG生成）。
+- 追加のテストや実装を行う場合は `hlmm/cli` にサブコマンド追加、必要に応じて他サブパッケージを拡張。

@@ -1,0 +1,15 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: baseline
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    base_spread_bps: 5.0
+    base_size: 1.0
+    inventory_skew_bps: 2.0
+    inventory_target: 0.0

@@ -1,0 +1,21 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: baseline_plus_stop
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 5.0
+    base_size: 1.0
+    inventory_skew_bps: 2.0
+    inventory_target: 0.0
+
+    # 追加: ストップ系のみ
+    stop_max_abs_position: 3.0
+    stop_max_intraday_drawdown_usdc: -50.0
+    # stop_max_intraday_drawdown_pct: -0.02
