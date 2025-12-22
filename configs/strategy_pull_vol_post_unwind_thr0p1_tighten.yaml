@@ -1,0 +1,32 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: pull_vol_post_unwind_thr0p1_tighten
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # pull window（fixed-rate 10%）
+    pull_when_abs_mid_ret_gt: 0.00027048
+    pull_spread_add_bps: 0.1
+    pull_size_factor: 0.7
+    pull_mode: one_side
+
+    # post-pull unwind（解除を早める: 0.05 -> 0.1）
+    post_pull_unwind_enable: true
+    post_pull_unwind_until_abs_pos_lt: 0.1
+    post_pull_inventory_skew_mult: 3.0
+
+    # 追加: unwind中は「在庫を減らす側」だけタイト化して刺さりやすくする（まずはこれ1個だけで検証）
+    # - ロングなら ask 側、ショートなら bid 側にだけ適用される
+    post_pull_unwind_spread_add_bps: -0.1

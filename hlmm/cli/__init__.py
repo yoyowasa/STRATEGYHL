@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 from importlib import metadata
+from pathlib import Path
 import sys
 from typing import Iterable, Optional
 
 import yaml
 
 from hlmm.config import ConfigError, load_config
-from hlmm.mm import run_mm_sim, run_replay
+from hlmm.mm import StrategyParams, decide_orders, run_mm_sim, run_replay
 from hlmm.research import build_dataset, run_edge_screen
 from hlmm.research.report import generate_report
 
@@ -95,13 +96,17 @@ def build_parser() -> argparse.ArgumentParser:
     sim_parser = subparsers.add_parser(
         "mm-sim", help="blocks.parquet を用いた簡易マーケットメイクシミュレーション"
     )
-    sim_parser.add_argument("--blocks", required=True, help="入力 blocks.parquet")
+    sim_parser.add_argument(
+        "--blocks",
+        default=None,
+        help="入力 blocks.parquet（未指定の場合、--config があれば paths.data_dir/blocks.parquet を使用）",
+    )
     sim_parser.add_argument("--out-dir", default="mm_sim_out", help="出力ディレクトリ")
     sim_parser.add_argument(
         "--taker-fee-bps",
         type=float,
         default=0.0,
-        help="フィル時の手数料bps（例: 5=0.05%）",
+        help="フィル時の手数料bps（例: 5=0.05%%）",
     )
     sim_parser.add_argument(
         "--maker-rebate-bps",
@@ -132,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="lowerフィルで使用する最大約定件数",
+    )
+    sim_parser.add_argument(
+        "--allow-top-fill",
+        action="store_true",
+        help="trade_bucketが空でも板トップで約定させる（デバッグ用。厳密検証ではOFF推奨）",
     )
 
     replay_parser = subparsers.add_parser(
@@ -169,15 +179,185 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 0
 
     if args.command == "mm-sim":
+        config = None
+        if args.config:
+            try:
+                config = load_config(args.config)
+            except ConfigError as exc:
+                parser.exit(status=1, message=f"config error: {exc}\n")
+
+        blocks_path = args.blocks
+        if not blocks_path:
+            if not config:
+                parser.error("mm-sim には --blocks が必要です（または --config で paths.data_dir を指定）")
+            blocks_path = str(Path(config.paths.data_dir) / "blocks.parquet")
+
+        out_dir = args.out_dir
+        if config and args.out_dir == "mm_sim_out":
+            out_dir = str(Path(config.paths.output_dir) / f"mm_sim_{config.strategy.name}")
+
+        strategy_fn = None
+        if config:
+            extra = dict(config.strategy.extra_params or {})
+
+            def _as_bool(v: object) -> bool:
+                if isinstance(v, bool):
+                    return v
+                if v is None:
+                    return False
+                if isinstance(v, (int, float)):
+                    return float(v) != 0.0
+                if isinstance(v, str):
+                    s = v.strip().lower()
+                    if s in {"1", "true", "yes", "y", "on"}:
+                        return True
+                    if s in {"0", "false", "no", "n", "off"}:
+                        return False
+                return bool(v)
+
+            effective_max_abs_position = (
+                args.max_abs_position
+                if args.max_abs_position is not None
+                else (float(extra["max_abs_position"]) if "max_abs_position" in extra else None)
+            )
+
+            # alias: one_side_pull_mode / one_side_pull_size_factor / one_side_pull_add_bps
+            pull_mode = str(extra.get("pull_mode", "symmetric"))
+            pull_spread_add_bps = float(extra.get("pull_spread_add_bps", 0.0))
+            pull_size_factor = float(extra.get("pull_size_factor", 1.0))
+            if "pull_mode" not in extra and "one_side_pull_mode" in extra:
+                one_side_mode = str(extra.get("one_side_pull_mode") or "").lower().strip()
+                if one_side_mode in ("size_only", "size"):
+                    pull_mode = "one_side"
+                    pull_spread_add_bps = 0.0
+                    pull_size_factor = float(extra.get("one_side_pull_size_factor", pull_size_factor))
+                elif one_side_mode in ("widen_only", "widen", "spread_only", "spread"):
+                    pull_mode = "one_side"
+                    pull_spread_add_bps = float(extra.get("one_side_pull_add_bps", pull_spread_add_bps))
+                    pull_size_factor = 1.0
+                elif one_side_mode in ("widen_and_size", "both"):
+                    pull_mode = "one_side"
+                    pull_spread_add_bps = float(extra.get("one_side_pull_add_bps", pull_spread_add_bps))
+                    pull_size_factor = float(extra.get("one_side_pull_size_factor", pull_size_factor))
+            params = StrategyParams(
+                base_spread_bps=float(extra.get("base_spread_bps", 5.0)),
+                base_size=float(extra.get("base_size", 1.0)),
+                inventory_skew_bps=float(extra.get("inventory_skew_bps", 2.0)),
+                inventory_target=float(extra.get("inventory_target", 0.0)),
+                max_abs_position=effective_max_abs_position,
+                stop_max_abs_position=(
+                    float(extra["stop_max_abs_position"]) if "stop_max_abs_position" in extra else None
+                ),
+                stop_max_intraday_drawdown_usdc=(
+                    float(extra["stop_max_intraday_drawdown_usdc"])
+                    if "stop_max_intraday_drawdown_usdc" in extra
+                    else None
+                ),
+                stop_when_market_spread_bps_gt=(
+                    float(extra["stop_when_market_spread_bps_gt"])
+                    if "stop_when_market_spread_bps_gt" in extra
+                    else None
+                ),
+                stop_when_market_spread_bps_lt=(
+                    float(extra["stop_when_market_spread_bps_lt"])
+                    if "stop_when_market_spread_bps_lt" in extra
+                    else None
+                ),
+                stop_when_abs_mid_ret_gt=(
+                    float(extra["stop_when_abs_mid_ret_gt"]) if "stop_when_abs_mid_ret_gt" in extra else None
+                ),
+                stop_mode=str(extra.get("stop_mode", "halt")),
+                pull_when_market_spread_bps_gt=(
+                    float(extra["pull_when_market_spread_bps_gt"])
+                    if "pull_when_market_spread_bps_gt" in extra
+                    else None
+                ),
+                pull_when_market_spread_bps_lt=(
+                    float(extra["pull_when_market_spread_bps_lt"])
+                    if "pull_when_market_spread_bps_lt" in extra
+                    else None
+                ),
+                pull_when_abs_mid_ret_gt=(
+                    float(extra["pull_when_abs_mid_ret_gt"]) if "pull_when_abs_mid_ret_gt" in extra else None
+                ),
+                pull_when_abs_signed_volume_gt=(
+                    float(extra["pull_when_abs_signed_volume_gt"])
+                    if "pull_when_abs_signed_volume_gt" in extra
+                    else (float(extra["flow_thr"]) if "flow_thr" in extra else None)
+                ),
+                pull_signed_volume_window_s=(
+                    float(extra["pull_signed_volume_window_s"])
+                    if "pull_signed_volume_window_s" in extra
+                    else (float(extra["flow_window_s"]) if "flow_window_s" in extra else None)
+                ),
+                ask_size_factor_when_sv_neg=(
+                    float(extra["ask_size_factor_when_sv_neg"]) if "ask_size_factor_when_sv_neg" in extra else None
+                ),
+                pull_spread_add_bps=float(pull_spread_add_bps),
+                pull_size_factor=float(pull_size_factor),
+                pull_mode=str(pull_mode),
+                pull_window_max_abs_position=(
+                    float(extra["pull_window_max_abs_position"]) if "pull_window_max_abs_position" in extra else None
+                ),
+                pull_window_inventory_skew_mult=float(extra.get("pull_window_inventory_skew_mult", 1.0)),
+                post_pull_unwind_enable=_as_bool(extra.get("post_pull_unwind_enable", False)),
+                post_pull_unwind_until_abs_pos_lt=(
+                    float(extra["post_pull_unwind_until_abs_pos_lt"])
+                    if "post_pull_unwind_until_abs_pos_lt" in extra
+                    else None
+                ),
+                post_pull_inventory_skew_mult=float(extra.get("post_pull_inventory_skew_mult", 1.0)),
+                post_pull_unwind_spread_add_bps=float(extra.get("post_pull_unwind_spread_add_bps", 0.0)),
+                post_pull_unwind_size_factor=float(extra.get("post_pull_unwind_size_factor", 1.0)),
+                post_pull_unwind_other_side_size_factor=float(
+                    extra.get("post_pull_unwind_other_side_size_factor", 1.0)
+                ),
+            )
+
+            def strategy_fn(block, state):  # type: ignore[no-redef]
+                top = block.get("book_top") or {}
+                try:
+                    bid = float(top.get("bid_px")) if top.get("bid_px") is not None else None
+                    ask = float(top.get("ask_px")) if top.get("ask_px") is not None else None
+                except (TypeError, ValueError):
+                    bid = None
+                    ask = None
+                mid = (bid + ask) / 2.0 if bid is not None and ask is not None else None
+                market_spread_bps = (
+                    10_000.0 * (ask - bid) / mid
+                    if bid is not None and ask is not None and mid not in (None, 0.0)
+                    else None
+                )
+                # strategy が参照できる状態を更新
+                state["mid"] = mid
+                state["market_spread_bps"] = market_spread_bps
+                res = decide_orders(state, params)
+                state["stop_triggered"] = bool(res.get("stop_triggered"))
+                state["pull_triggered"] = bool(res.get("pull_triggered"))
+                state["pull_side"] = res.get("pull_side")
+                state["strategy_spread_bps"] = res.get("strategy_spread_bps")
+                state["strategy_size"] = res.get("strategy_size")
+                state["strategy_bid_spread_bps"] = res.get("strategy_bid_spread_bps")
+                state["strategy_ask_spread_bps"] = res.get("strategy_ask_spread_bps")
+                state["strategy_bid_size"] = res.get("strategy_bid_size")
+                state["strategy_ask_size"] = res.get("strategy_ask_size")
+                state["post_pull_unwind_active"] = bool(res.get("post_pull_unwind_active"))
+                if res.get("halt"):
+                    return []
+                return list(res.get("orders") or [])
+
         run_mm_sim(
-            blocks_path=args.blocks,
-            out_dir=args.out_dir,
+            blocks_path=blocks_path,
+            out_dir=out_dir,
             taker_fee_bps=args.taker_fee_bps,
             maker_rebate_bps=args.maker_rebate_bps,
-            max_abs_position=args.max_abs_position,
+            max_abs_position=effective_max_abs_position if config else args.max_abs_position,
             fill_model=args.fill_model,
             lower_alpha=args.lower_alpha,
             lower_nprints=args.lower_nprints,
+            signed_volume_window_s=params.pull_signed_volume_window_s,
+            allow_top_fill=bool(args.allow_top_fill),
+            strategy=strategy_fn,
         )
         return 0
 

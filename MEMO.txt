@@ -1,0 +1,194 @@
+cd E:\STRATEGYHL
+
+# =========================
+# 実行（ETH-USDC PERP）
+# =========================
+
+# 0) 収集（短時間の例: 10分）
+# - coin="ETH" が PERP（別名: ETHUSDCPERP）
+# - 429 が出るなら poll を 2000-5000ms に上げる
+poetry run python scripts/capture_hl_l2_trades.py --coin ETHUSDCPERP --duration-sec 600 --poll-interval-ms 2000 --book-depth 20 --out raw_data/hl_eth_perp.jsonl
+
+# 1) raw -> blocks.parquet（l2Bookをクロックにtradeをバケット化）
+poetry run python scripts/raw_to_blocks.py --input raw_data/hl_eth_perp.jsonl --symbol ETH --out-blocks data/blocks.parquet
+
+# 2) baselineでmm_sim実行（出力: outputs/mm_sim_baseline/）
+poetry run hlmm --config configs/strategy_baseline.yaml mm-sim --fill-model lower --lower-alpha 0.5
+
+# 3) features 作成（realized_spread 用）
+poetry run python -c "import pyarrow as pa, pyarrow.parquet as pq; from hlmm.features import compute_features; blocks=pq.read_table('data/blocks.parquet').to_pylist(); feats=compute_features(blocks); pq.write_table(pa.Table.from_pylist(feats), 'data/features.parquet')"
+
+# 4) レポート生成（reports/<run_id>/metrics.json + plots）
+poetry run python -c "from hlmm.research import generate_report; generate_report('baseline', 'outputs/mm_sim_baseline/ledger.parquet', 'outputs/mm_sim_baseline/sim_trades.parquet', features_path='data/features.parquet')"
+Get-Content reports/baseline/metrics.json
+
+# 4.5) baseline/stop/pull を一枚表で比較（baselineとの差分Δつき）
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop,pull --format md
+
+# 4.5b) 原因特定用（realized spread / markout / inventory / 区間別PnL の追加表示）
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop,pull --format md --metrics pnl,max_drawdown,fill_rate,num_fills,notional_traded,realized_spread_5s,markout_5s,inventory.mean,inventory.p95,inventory.max_abs,stop_trigger_rate,pull_trigger_rate,fills_when_stop,fills_when_pull,pnl_when_stop,pnl_when_pull
+
+# 4.5c) 「同じ市場条件ウィンドウ」でA/B比較（baselineでも比較できる形）
+# - pull_window/stop_window は、--pull-window-from/--stop-window-from の trigger を市場条件ウィンドウとして使用
+# - 同じ blocks.parquet を入れている限り、*_window_rate は全runで一致するのが正常
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop,pull --format md --metrics pnl,max_drawdown,stop_trigger_rate,pull_trigger_rate,pull_window_rate,pnl_in_pull_window,pnl_outside_pull_window,fills_in_pull_window,fills_outside_pull_window,stop_window_rate,pnl_in_stop_window,pnl_outside_stop_window,fills_in_stop_window,fills_outside_stop_window
+
+# 4.5c-2) tight spread 時のウィンドウで比較する（例: pull_tight / stop_tight が定義したウィンドウを使う）
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop_tight_halt,stop_tight,pull_tight,pull_tight_spread_only,pull_tight_size_only --pull-window-from pull_tight --stop-window-from stop_tight --format md --metrics pnl,max_drawdown,stop_trigger_rate,pull_trigger_rate,markout_5s,pull_window_rate,pnl_in_pull_window,pnl_outside_pull_window,fills_in_pull_window,fills_outside_pull_window,stop_window_rate,pnl_in_stop_window,pnl_outside_stop_window,fills_in_stop_window,fills_outside_stop_window
+
+# 4.5c-3) （任意）原因特定を速くする: 在庫/markout/realized_spread を window内/外 で出す
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop_tight_halt,stop_tight,pull_tight,pull_tight_spread_only,pull_tight_size_only --pull-window-from pull_tight --stop-window-from stop_tight --format md --metrics pnl,max_drawdown,markout_5s,pull_window_rate,pnl_in_pull_window,pnl_outside_pull_window,fills_in_pull_window,fills_outside_pull_window,inventory_mean_in_pull_window,inventory_p95_in_pull_window,inventory_max_abs_in_pull_window,inventory_mean_outside_pull_window,inventory_p95_outside_pull_window,inventory_max_abs_outside_pull_window,markout_5s_in_pull_window,markout_5s_outside_pull_window,realized_spread_5s_in_pull_window,realized_spread_5s_outside_pull_window
+
+# 4.5c-4) outsideで負ける原因を確定する: PnL成分（price/unrealized）を window内/外 で分解
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,pull_tight,pull_tight_spread_only,pull_tight_size_only --pull-window-from pull_tight --format md --metrics pnl,pnl_in_pull_window,pnl_outside_pull_window,price_pnl_in_pull_window,price_pnl_outside_pull_window,unrealized_pnl_in_pull_window,unrealized_pnl_outside_pull_window
+
+# 4.7) 危険windowの作り直し（baselineのpnl_deltaが悪い時間帯を説明する特徴量を探す）
+# - 最悪q%のpnl_deltaを「危険」とみなし、market_spread/abs_mid_ret などの単一閾値で当てにいく
+poetry run python scripts/find_risk_window.py --ledger outputs/mm_sim_baseline/ledger.parquet --risk-quantile 0.10
+
+# 4.7b) 変動率（abs_mid_ret）windowで pull/stop を試す（閾値は find_risk_window.py の結果に合わせて調整）
+poetry run hlmm --config configs/strategy_pull_vol.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull_vol --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol', 'outputs/mm_sim_pull_vol/ledger.parquet', 'outputs/mm_sim_pull_vol/sim_trades.parquet', features_path='data/features.parquet')"
+poetry run hlmm --config configs/strategy_stop_vol.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_stop_vol --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('stop_vol', 'outputs/mm_sim_stop_vol/ledger.parquet', 'outputs/mm_sim_stop_vol/sim_trades.parquet', features_path='data/features.parquet')"
+
+# window定義を vol 側に切り替えて比較
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop_vol,pull_vol --pull-window-from pull_vol --stop-window-from stop_vol --format md --metrics pnl,max_drawdown,stop_trigger_rate,pull_trigger_rate,markout_5s,pull_window_rate,pnl_in_pull_window,pnl_outside_pull_window,fills_in_pull_window,fills_outside_pull_window,inventory_p95_in_pull_window,inventory_p95_outside_pull_window,markout_5s_in_pull_window,markout_5s_outside_pull_window
+
+# 4.7c) pull_vol の「outside崩壊」を潰す（在庫ガードを追加して比較）
+# - 変更点は1つだけ（cap か skew倍率 のどちらか）にして比較する
+poetry run hlmm --config configs/strategy_pull_vol_cap.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_cap', 'outputs/mm_sim_pull_vol_cap/ledger.parquet', 'outputs/mm_sim_pull_vol_cap/sim_trades.parquet', features_path='data/features.parquet')"
+poetry run hlmm --config configs/strategy_pull_vol_skew.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_skew', 'outputs/mm_sim_pull_vol_skew/ledger.parquet', 'outputs/mm_sim_pull_vol_skew/sim_trades.parquet', features_path='data/features.parquet')"
+
+# outside側の在庫統計とPnL成分を見て原因確定（baselineでも比較できる）
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,pull_vol,pull_vol_cap,pull_vol_skew --pull-window-from pull_vol --format md --metrics pnl,pnl_in_pull_window,pnl_outside_pull_window,price_pnl_in_pull_window,price_pnl_outside_pull_window,unrealized_pnl_in_pull_window,unrealized_pnl_outside_pull_window,inventory_mean_outside_pull_window,inventory_p95_outside_pull_window,inventory_max_abs_outside_pull_window
+
+# （追加）在庫×値動きの相関（pos×Δmid）を出す（outsideのunrealizedが「在庫量」ではなく相関で死んでるか確認）
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,pull_vol,pull_vol_cap,pull_vol_skew --pull-window-from pull_vol --format md --metrics pos_ret_outside_pull_window,corr_pos_prev_dprice_outside_pull_window
+
+# （追加）post-pull unwind: pull window を抜けたら在庫を素早く0へ戻す（outside崩壊を減らす）
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind', 'outputs/mm_sim_pull_vol_post_unwind/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind/sim_trades.parquet')"
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,pull_vol,pull_vol_post_unwind --pull-window-from pull_vol --format md --metrics pnl,pnl_in_pull_window,pnl_outside_pull_window,price_pnl_in_pull_window,price_pnl_outside_pull_window,unrealized_pnl_in_pull_window,unrealized_pnl_outside_pull_window,fills_in_pull_window,fills_outside_pull_window,inventory_p95_in_pull_window,pos_ret_outside_pull_window,corr_pos_prev_dprice_outside_pull_window,post_unwind_active_rate_in_pull_window,post_unwind_active_rate_outside_pull_window
+
+# post-pull unwind を弱める（変更点1つだけでA/B）
+# A) skewを弱める（3.0 -> 2.0）
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_skew2.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_skew2', 'outputs/mm_sim_pull_vol_post_unwind_skew2/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_skew2/sim_trades.parquet')"
+
+# （追加）skew倍率が「効くノブ」かを極端値で1回だけ判定
+# - sim_trades_hash8 が動かなければ、このノブは当面探索から外してOK
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_skew0.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_skew0', 'outputs/mm_sim_pull_vol_post_unwind_skew0/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_skew0/sim_trades.parquet')"
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_skew10.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_skew10', 'outputs/mm_sim_pull_vol_post_unwind_skew10/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_skew10/sim_trades.parquet')"
+poetry run python scripts/compare_metrics.py --baseline pull_vol_post_unwind --runs pull_vol_post_unwind,pull_vol_post_unwind_skew0,pull_vol_post_unwind_skew10 --pull-window-from pull_vol --format md --metrics pnl,max_drawdown,sim_trades_hash8,orders_hash8
+
+# B) 解除を早める（0.05 -> 0.1。値を大きくすると早く解除される）
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_thr0p1.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_thr0p1', 'outputs/mm_sim_pull_vol_post_unwind_thr0p1/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_thr0p1/sim_trades.parquet')"
+
+# （追加）until_abs_pos_lt の4点グリッド（1ノブだけで最適点を探す）
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_thr0p02.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_thr0p02', 'outputs/mm_sim_pull_vol_post_unwind_thr0p02/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_thr0p02/sim_trades.parquet')"
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind', 'outputs/mm_sim_pull_vol_post_unwind/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind/sim_trades.parquet')"
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_thr0p1.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_thr0p1', 'outputs/mm_sim_pull_vol_post_unwind_thr0p1/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_thr0p1/sim_trades.parquet')"
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_thr0p2.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_thr0p2', 'outputs/mm_sim_pull_vol_post_unwind_thr0p2/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_thr0p2/sim_trades.parquet')"
+poetry run python scripts/compare_metrics.py --baseline pull_vol --runs pull_vol,pull_vol_post_unwind_thr0p02,pull_vol_post_unwind,pull_vol_post_unwind_thr0p1,pull_vol_post_unwind_thr0p2 --pull-window-from pull_vol --format md --metrics pnl,pnl_in_pull_window,pnl_outside_pull_window,unrealized_pnl_in_pull_window,unrealized_pnl_outside_pull_window,post_unwind_active_rate_outside_pull_window,fills_outside_when_unwind_active,notional_outside_when_unwind_active,sim_trades_hash8
+
+# C) unwind中の「刺さりやすさ」を上げる（まずは spread をタイト化するだけ）
+# - post_pull_unwind_spread_add_bps はロングなら ask 側、ショートなら bid 側にだけ効く
+poetry run hlmm --config configs/strategy_pull_vol_post_unwind_thr0p1_tighten.yaml mm-sim --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_vol_post_unwind_thr0p1_tighten', 'outputs/mm_sim_pull_vol_post_unwind_thr0p1_tighten/ledger.parquet', 'outputs/mm_sim_pull_vol_post_unwind_thr0p1_tighten/sim_trades.parquet')"
+
+# pull_vol をbaselineにして「post_unwindの差」だけを見る
+poetry run python scripts/compare_metrics.py --baseline pull_vol --runs pull_vol,pull_vol_post_unwind,pull_vol_post_unwind_skew2,pull_vol_post_unwind_thr0p1 --pull-window-from pull_vol --format md --metrics pnl,pnl_in_pull_window,pnl_outside_pull_window,price_pnl_in_pull_window,price_pnl_outside_pull_window,unrealized_pnl_in_pull_window,unrealized_pnl_outside_pull_window,fills_in_pull_window,fills_outside_pull_window,post_unwind_active_rate_outside_pull_window
+
+# （追加）「設定を変えたのに結果が同じ」時の最短チェック（ハッシュで同一性確認）
+# - ledger/sim_trades が一致していれば、シム結果は同一
+# - orders だけ違うなら「注文は変わったが、約定が変わらなかった」可能性が高い
+poetry run python scripts/compare_metrics.py --baseline pull_vol_post_unwind --runs pull_vol_post_unwind,pull_vol_post_unwind_skew2 --format md --metrics ledger_hash8,sim_trades_hash8,orders_hash8,ledger_same_as_baseline,sim_trades_same_as_baseline,orders_same_as_baseline
+
+# （追加）unwindが「ONなだけ」か「fillsを生んでいるか」を可視化（outsideのみ）
+poetry run python scripts/compare_metrics.py --baseline pull_vol_post_unwind --runs pull_vol_post_unwind,pull_vol_post_unwind_thr0p1 --pull-window-from pull_vol --format md --metrics post_unwind_active_rate_outside_pull_window,fills_outside_when_unwind_active,notional_outside_when_unwind_active,avg_abs_pos_outside_when_unwind_active
+
+# 4.6) 接続チェック（強制発動で差が出るか）
+# - stop/pull が「発動していないだけ」なのか、「実装に繋がっていない」のかを即判定できる
+poetry run hlmm --config configs/strategy_stop_force.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_stop_force --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('stop_force', 'outputs/mm_sim_stop_force/ledger.parquet', 'outputs/mm_sim_stop_force/sim_trades.parquet', features_path='data/features.parquet')"
+poetry run hlmm --config configs/strategy_pull_force.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull_force --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_force', 'outputs/mm_sim_pull_force/ledger.parquet', 'outputs/mm_sim_pull_force/sim_trades.parquet', features_path='data/features.parquet')"
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop_force,pull_force --format md
+
+# 5) 最終損益（ledgerの最後の total_pnl）
+poetry run python -c "import pyarrow.parquet as pq; print(pq.read_table('outputs/mm_sim_baseline/ledger.parquet').to_pydict()['total_pnl'][-1])"
+
+# 6) 最大ドローダウン（簡易）
+poetry run python -c "import numpy as np; import pyarrow.parquet as pq; pnl=np.array(pq.read_table('outputs/mm_sim_baseline/ledger.parquet').to_pydict()['total_pnl'], dtype=float); peak=np.maximum.accumulate(pnl); dd=pnl-peak; print(dd.min())"
+
+# =========================
+# A/B比較（エッジ探索）
+# =========================
+
+# 基本方針:
+# - 基準（ベース）を1つ決める（baselineを固定）
+# - 変更点を1つだけ足した候補を作る（stopだけ / pullだけ）
+# - 同じ期間・同じデータで「ベース vs 候補」を比較
+# - 良ければ残す、悪ければ捨てる → これを繰り返す
+#
+# なぜ「変更点を1つだけ」?
+# - 2つ以上同時に変えると、勝っても負けても原因が特定できないため。
+#
+# “エッジがある”の最低限チェック:
+# - ネット損益（pnl）
+# - 最大ドローダウン（max_dd）
+# - 約定が極端に減ってないか（num_fills / notional_traded）
+#
+# サンプル数の目安:
+# - num_fills < 200: まず動作確認扱い
+# - 500-2000: 比較が現実的
+#
+# サンプルを増やす方法:
+# - duration-sec を伸ばす
+# - 429が出るなら poll を上げる
+# - base_spread_bps を詰める（市場スプレッドに合わせる）
+
+# 実行例（同じ blocks.parquet で baseline/stop/pull を比較）
+poetry run hlmm --config configs/strategy_baseline.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_baseline --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('baseline', 'outputs/mm_sim_baseline/ledger.parquet', 'outputs/mm_sim_baseline/sim_trades.parquet', features_path='data/features.parquet')"
+
+poetry run hlmm --config configs/strategy_stop.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_stop --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('stop', 'outputs/mm_sim_stop/ledger.parquet', 'outputs/mm_sim_stop/sim_trades.parquet', features_path='data/features.parquet')"
+
+poetry run hlmm --config configs/strategy_pull.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull', 'outputs/mm_sim_pull/ledger.parquet', 'outputs/mm_sim_pull/sim_trades.parquet', features_path='data/features.parquet')"
+
+# （追加）market_spread が「狭すぎる時」を危険ウィンドウとして pull/stop を試す
+poetry run hlmm --config configs/strategy_pull_tight.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull_tight --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_tight', 'outputs/mm_sim_pull_tight/ledger.parquet', 'outputs/mm_sim_pull_tight/sim_trades.parquet', features_path='data/features.parquet')"
+
+poetry run hlmm --config configs/strategy_stop_tight.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_stop_tight --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('stop_tight', 'outputs/mm_sim_stop_tight/ledger.parquet', 'outputs/mm_sim_stop_tight/sim_trades.parquet', features_path='data/features.parquet')"
+
+# （追加）pull を spread_only / size_only に分解して原因を切り分ける
+poetry run hlmm --config configs/strategy_pull_tight_spread_only.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull_tight_spread_only --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_tight_spread_only', 'outputs/mm_sim_pull_tight_spread_only/ledger.parquet', 'outputs/mm_sim_pull_tight_spread_only/sim_trades.parquet', features_path='data/features.parquet')"
+
+poetry run hlmm --config configs/strategy_pull_tight_size_only.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull_tight_size_only --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_tight_size_only', 'outputs/mm_sim_pull_tight_size_only/ledger.parquet', 'outputs/mm_sim_pull_tight_size_only/sim_trades.parquet', features_path='data/features.parquet')"
+
+# （追加）stop の halt vs unwind_only を比較する
+poetry run hlmm --config configs/strategy_stop_tight_halt.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_stop_tight_halt --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('stop_tight_halt', 'outputs/mm_sim_stop_tight_halt/ledger.parquet', 'outputs/mm_sim_stop_tight_halt/sim_trades.parquet', features_path='data/features.parquet')"
+
+# 決定性チェック（同条件で2回回して metrics.json が一致するか）
+poetry run hlmm --config configs/strategy_baseline.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_baseline_1 --fill-model lower --lower-alpha 0.5
+poetry run hlmm --config configs/strategy_baseline.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_baseline_2 --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('baseline_1', 'outputs/mm_sim_baseline_1/ledger.parquet', 'outputs/mm_sim_baseline_1/sim_trades.parquet', features_path='data/features.parquet')"
+poetry run python -c "from hlmm.research import generate_report; generate_report('baseline_2', 'outputs/mm_sim_baseline_2/ledger.parquet', 'outputs/mm_sim_baseline_2/sim_trades.parquet', features_path='data/features.parquet')"
+poetry run python -c "import json; a=json.load(open('reports/baseline_1/metrics.json')); b=json.load(open('reports/baseline_2/metrics.json')); print(a==b); print(a['pnl'], b['pnl'])"

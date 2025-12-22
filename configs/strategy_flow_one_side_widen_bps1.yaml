@@ -1,0 +1,27 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: flow_one_side_widen_bps1
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline と同一のベース設定（変更点を1つにする）
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 追加: signed_volume（符号付き出来高）で片側pull（widen-only）
+    # - BUY圧（signed_volume>0）: ASK側が危ないので ASKだけ遠ざける
+    # - SELL圧（signed_volume<0）: BID側が危ないので BIDだけ遠ざける
+    # 閾値は blocks から |signed_volume| の分位で決める（例: p80 で発動率≈20%）
+    pull_signed_volume_window_s: 2
+    pull_when_abs_signed_volume_gt: 0.2103
+    pull_mode: one_side
+    pull_spread_add_bps: 1.0
+    pull_size_factor: 1.0

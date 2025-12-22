@@ -40,9 +40,54 @@ PY
 
 ## Hyperliquid 短期OHLCV（candleSnapshot）
 - 取得: `python scripts/fetch_hl_candles.py --intervals 1m,5m,15m,30m,1h,4h,1d`
-- 出力先: `data/hyperliquid/candles/`（例: `data_eth_perp_1m.json`, `data_ueth_usdc_1h.json`）
-- spot は UETH/USDC に remap されるため `@index`（例: `@151`）で取得します（`spotMeta` は `data/hyperliquid/meta/spotMeta.json` に保存）。
+- 出力先: `data/hyperliquid/candles/`（例: `data_eth_perp_1m.json`, `data_ethusdc_1h.json`）
+- spot の ETHUSDC は API 上 `@index`（例: `@151`）で取得します（`spotMeta` は `data/hyperliquid/meta/spotMeta.json` に保存）。
 - 45m は API 非対応のため、15m から集約して生成: `python scripts/derive_hl_candles.py --input data/hyperliquid/candles/data_eth_perp_15m.json --output data/hyperliquid/candles/data_eth_perp_45m.json --target-interval 45m`
+
+## 本気検証（l2Book/trades → blocks → mm_sim）
+PowerShell 例（ETH-USDC PERP）:
+
+```powershell
+# 1) l2Book+trades を短時間取得（429が出るなら poll を 2000〜5000ms に上げる）
+poetry run python scripts/capture_hl_l2_trades.py --coin ETHUSDCPERP --duration-sec 600 --poll-interval-ms 2000 --book-depth 20 --out raw_data/hl_eth_perp.jsonl
+
+# 2) raw -> blocks.parquet（l2Bookをクロックにtradeをバケット化）
+poetry run python scripts/raw_to_blocks.py --input raw_data/hl_eth_perp.jsonl --symbol ETH --out-blocks data/blocks.parquet
+
+# 3) baselineでmm_sim（出力: outputs/mm_sim_baseline/）
+poetry run hlmm --config configs/strategy_baseline.yaml mm-sim --fill-model lower --lower-alpha 0.5
+
+# 4) features を作って realized spread も含めてレポート
+poetry run python -c "import pyarrow as pa, pyarrow.parquet as pq; from hlmm.features import compute_features; blocks=pq.read_table('data/blocks.parquet').to_pylist(); feats=compute_features(blocks); pq.write_table(pa.Table.from_pylist(feats), 'data/features.parquet')"
+poetry run python -c "from hlmm.research import generate_report; generate_report('baseline', 'outputs/mm_sim_baseline/ledger.parquet', 'outputs/mm_sim_baseline/sim_trades.parquet', features_path='data/features.parquet')"
+Get-Content reports/baseline/metrics.json
+```
+
+## 比較（baseline vs stop/pull）
+`reports/<run_id>/metrics.json` を baseline 差分つきで1枚表にする:
+
+```powershell
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop,pull --format md
+```
+
+原因特定用に `realized_spread/markout/inventory` に加えて、`fills_when_*` / `pnl_when_*`（stop/pull区間の約定回数・PnL）も一緒に出す:
+
+```powershell
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop,pull --format md --metrics pnl,max_drawdown,fill_rate,num_fills,notional_traded,realized_spread_5s,markout_5s,inventory.mean,inventory.p95,inventory.max_abs,stop_trigger_rate,pull_trigger_rate,fills_when_stop,fills_when_pull,pnl_when_stop,pnl_when_pull
+```
+
+### stop/pull の接続チェック（強制発動）
+「実装に繋がっているか」だけを確認したい場合は、強制版 config を使う。
+
+```powershell
+poetry run hlmm --config configs/strategy_stop_force.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_stop_force --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('stop_force', 'outputs/mm_sim_stop_force/ledger.parquet', 'outputs/mm_sim_stop_force/sim_trades.parquet')"
+
+poetry run hlmm --config configs/strategy_pull_force.yaml mm-sim --blocks data/blocks.parquet --out-dir outputs/mm_sim_pull_force --fill-model lower --lower-alpha 0.5
+poetry run python -c "from hlmm.research import generate_report; generate_report('pull_force', 'outputs/mm_sim_pull_force/ledger.parquet', 'outputs/mm_sim_pull_force/sim_trades.parquet')"
+
+poetry run python scripts/compare_metrics.py --baseline baseline --runs baseline,stop_force,pull_force --format md
+```
 
 ## Testing
 

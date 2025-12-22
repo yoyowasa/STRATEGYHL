@@ -1,0 +1,28 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: pull_vol_cap
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 追加: 変動率（abs_mid_ret）で pull window を作る
+    pull_when_abs_mid_ret_gt: 0.00027048  # window_rate≈10%（find_risk_window.py の fixed-rate 0.1）
+    pull_spread_add_bps: 0.1
+    pull_size_factor: 0.7
+    pull_mode: one_side
+
+    # 追加: pull window 中だけ在庫上限を縮める（在庫の持ち越しを減らす）
+    # - inventory_target からの偏り(|pos-target|)上限
+    # - 値はまず baseline の inventory 分布（p95/max）を見て決める
+    pull_window_max_abs_position: 0.5

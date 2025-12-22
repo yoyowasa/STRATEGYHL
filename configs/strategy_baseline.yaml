@@ -9,7 +9,11 @@ strategy:
   leverage: 1.0
   max_positions: 10
   extra_params:
-    base_spread_bps: 5.0
-    base_size: 1.0
-    inventory_skew_bps: 2.0
+    # HLのETH-PERPは板スプレッドが非常に狭い（例: ~0.32bps）。
+    # StrategyParams の base_spread_bps は「midからの片側幅」なので、0.15〜0.2bps程度から開始する。
+    base_spread_bps: 0.15
+    base_size: 0.1
+    # inventory_skew_bps が大きすぎると post-only で bid が ask を跨ぎ invalid_cross になりやすい。
+    inventory_skew_bps: 0.2
     inventory_target: 0.0
+    max_abs_position: 1.0

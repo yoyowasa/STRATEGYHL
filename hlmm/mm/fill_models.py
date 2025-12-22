@@ -44,7 +44,7 @@ def fill_order_upper(
     size: float,
     limit_price: float,
     trades: Sequence[Mapping[str, object]],
-    allow_top_fill: bool = True,
+    allow_top_fill: bool = False,
 ) -> Optional[FillResult]:
     """最も楽観的なフィル: 全対象取引量を使用し、サイズ上限まで約定。"""
     eligible = _eligible_trades(side, limit_price, trades)
@@ -68,7 +68,7 @@ def fill_order_lower(
     trades: Sequence[Mapping[str, object]],
     alpha: float = 0.5,
     nprints: Optional[int] = None,
-    allow_top_fill: bool = True,
+    allow_top_fill: bool = False,
 ) -> Optional[FillResult]:
     """控えめなフィル: 対象取引量の alpha 倍、nprints 件まで使用。"""
     eligible = _eligible_trades(side, limit_price, trades)

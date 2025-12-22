@@ -1,0 +1,23 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: stop_tight
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 追加: ストップ系（tight spread 時だけ）
+    # unwind_only は在庫を減らす側だけ出す。posが0付近なら実質停止になるので注意。
+    stop_when_market_spread_bps_lt: 0.338
+    stop_mode: unwind_only
+

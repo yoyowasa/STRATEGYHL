@@ -1,0 +1,27 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: pull_vol
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 追加: 変動率（abs_mid_ret）で pull window を作る
+    # - abs_mid_ret は blockごとの |mid_t-mid_{t-1}|/mid_{t-1}（未来参照なし）
+    # - まず baseline の ledger から閾値候補を出す:
+    #   poetry run python scripts/find_risk_window.py --ledger outputs/mm_sim_baseline/ledger.parquet --risk-quantile 0.10
+    # fixed-rate 10% window（find_risk_window.py の結果）
+    pull_when_abs_mid_ret_gt: 0.00027048
+    pull_spread_add_bps: 0.1
+    pull_size_factor: 0.7
+    pull_mode: one_side

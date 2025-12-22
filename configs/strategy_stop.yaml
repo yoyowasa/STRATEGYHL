@@ -4,18 +4,23 @@ paths:
   output_dir: outputs
   log_dir: logs
 strategy:
-  name: baseline_plus_stop
+  name: stop
   risk_limit: 0.1
   leverage: 1.0
   max_positions: 10
   extra_params:
     # baselineと同一のベース設定
-    base_spread_bps: 5.0
-    base_size: 1.0
-    inventory_skew_bps: 2.0
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
     inventory_target: 0.0
+    max_abs_position: 1.0
 
-    # 追加: ストップ系のみ
-    stop_max_abs_position: 3.0
-    stop_max_intraday_drawdown_usdc: -50.0
-    # stop_max_intraday_drawdown_pct: -0.02
+    # 追加: ストップ系のみ（通常版）
+    # - 強制テスト版は configs/strategy_stop_force.yaml
+    # market_spread_bps は「bps単位」(10_000*(ask-bid)/mid)。HLのETH-PERPは 0.33bps 前後が多い。
+    # 直近2hデータ（3208 blocks）だと、閾値の例:
+    # - 0.34  -> 約13% 発動
+    # - 0.341 -> 約5% 発動
+    stop_when_market_spread_bps_gt: 0.34
+    stop_mode: unwind_only

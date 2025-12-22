@@ -1,0 +1,29 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: pull_tight
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 追加: プル系（tight spread 時だけ）
+    # market_spread_bps は「bps単位」(10_000*(ask-bid)/mid)。
+    # 直近2hの分布例（baseline ledger）:
+    # - q10 ≈ 0.33795bps
+    # - q50 ≈ 0.33915bps
+    # → 発動率が 5〜20% になるように閾値を調整する（まずは q10 付近から）。
+    pull_when_market_spread_bps_lt: 0.338
+    pull_spread_add_bps: 0.1
+    pull_size_factor: 0.7
+    pull_mode: one_side
+

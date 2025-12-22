@@ -14,7 +14,7 @@
 - 簡易MMシミュレーション: `hlmm/mm/sim.py` に Bookクロックのイベントループを実装。`simulate_blocks` は state更新→戦略→注文→fill→台帳更新の順で進み、post-onlyクロス検知/ポジション上限/手数料・リベート/ファンディングを反映。フィルモデル upper/lower を選択でき、lower は alpha/nprints で控えめ設定。`run_mm_sim` で blocks.parquet から `sim_trades.parquet`、`ledger.parquet`、`orders.parquet` を出力。CLI: `hlmm mm-sim --blocks blocks.parquet --out-dir mm_sim_out`.
 - 戦略: `hlmm/mm/strategy.py` に Strategy1（ベーススプレッド + 在庫スキュー）を実装。`decide_orders` が state→bid/ask の意図注文を決定的に返す。パラメータは `StrategyParams`（base_spread_bps/base_size/inventory_skew_bps/inventory_target/max_abs_position/strategy_variant）。
 - レポート: `hlmm/research/report.py` で ledger/trades（任意でfeatures）から metrics.json（fill率/realized spread/markout/在庫統計/fee分解）と equity/inventory の PNG を `reports/<run_id>/` に出力。
-- Hyperliquidキャンドル取得: `scripts/fetch_hl_candles.py` が `/info candleSnapshot` を取得し `data/hyperliquid/candles/` に保存（spotMeta は `data/hyperliquid/meta/spotMeta.json`）。45m は `scripts/derive_hl_candles.py` で 15m から集約。
+- Hyperliquidキャンドル取得: `scripts/fetch_hl_candles.py` が `/info candleSnapshot` を取得し `data/hyperliquid/candles/` に保存（spot ETHUSDC は API 上 `@index`。spotMeta は `data/hyperliquid/meta/spotMeta.json`）。45m は `scripts/derive_hl_candles.py` で 15m から集約。
 
 # テスト/動作確認
 - `poetry install` 後に `poetry run pytest`。スモーク + 設定系テスト (`tests/test_smoke_cli.py`, `tests/test_config_validation.py`, `tests/test_config_normalize.py`) が通ることを確認。
@@ -31,3 +31,11 @@
 - 戦略テスト: `tests/test_strategy_deterministic.py`（決定性）、`tests/test_inventory_skew_direction.py`（在庫スキュー方向）。
 - レポートテスト: `tests/test_metrics_schema.py`（必須キー確認）、`tests/test_report_artifacts_exist.py`（metrics.jsonとPNG生成）。
 - 追加のテストや実装を行う場合は `hlmm/cli` にサブコマンド追加、必要に応じて他サブパッケージを拡張。
+
+# 検証の進め方（運用ルール）
+- 基準（baseline）を1つ固定し、候補は「変更点を1つだけ」追加して同期間・同データで比較する（原因特定のため）。
+- 比較は同一 `blocks.parquet` を入力にし、少なくとも `pnl` / `max_dd` / `num_fills` / `notional_traded` を見る（取引が極端に減る勝ちは無意味）。
+- 決定性チェック: 同じ YAML・同じ `blocks.parquet` で2回実行し、`reports/<run_id>/metrics.json` が一致することを確認する。
+- サンプル数の目安: `num_fills < 200` は動作確認扱い、`500〜2000` で比較が現実的。
+- HLの `recentTrades.side` は `"A"/"B"` のため、収集時に `"sell"/"buy"` へ正規化して両側が入ることを確認する（片側だけだと fill が歪む）。
+- 「window内は改善するが outside で負ける」場合は、`pnl_in/out` に加えて `price_pnl_in/out` と `unrealized_pnl_in/out` を出し、どの成分が悪化しているかを先に確定する。

@@ -1,0 +1,23 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: stop_vol
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baselineと同一のベース設定
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 追加: 変動率（abs_mid_ret）で stop window を作る
+    # - stop中は unwind_only（在庫を減らす側だけ出す）
+    # fixed-rate 10% window（find_risk_window.py の結果）
+    stop_when_abs_mid_ret_gt: 0.00027048
+    stop_mode: unwind_only

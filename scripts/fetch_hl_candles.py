@@ -31,7 +31,7 @@ def _fetch_spot_meta(base_url: str) -> Dict[str, Any]:
     return meta
 
 
-def _resolve_ueth_usdc_spot_coin(spot_meta: Dict[str, Any]) -> str:
+def _resolve_ethusdc_spot_coin(spot_meta: Dict[str, Any]) -> str:
     tokens = spot_meta.get("tokens", [])
     universe = spot_meta.get("universe", [])
 
@@ -119,11 +119,11 @@ def main() -> int:
     end_ms = _now_ms()
 
     spot_meta = _fetch_spot_meta(args.base_url)
-    ueth_spot_coin = _resolve_ueth_usdc_spot_coin(spot_meta)
+    ethusdc_spot_coin = _resolve_ethusdc_spot_coin(spot_meta)
 
     tasks = [
         CandleTask(label="eth_perp", coin="ETH"),
-        CandleTask(label="ueth_usdc", coin=ueth_spot_coin),
+        CandleTask(label="ethusdc", coin=ethusdc_spot_coin),
     ]
 
     spotmeta_out = Path(args.spotmeta_out)

@@ -4,18 +4,26 @@ paths:
   output_dir: outputs
   log_dir: logs
 strategy:
-  name: baseline_plus_pull
+  name: pull
   risk_limit: 0.1
   leverage: 1.0
   max_positions: 10
   extra_params:
     # baselineと同一のベース設定
-    base_spread_bps: 5.0
-    base_size: 1.0
-    inventory_skew_bps: 2.0
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
     inventory_target: 0.0
+    max_abs_position: 1.0
 
-    # 追加: プル系のみ
-    pull_when_market_spread_bps_gt: 8.0
-    pull_spread_add_bps: 3.0
-    pull_size_factor: 0.5
+    # 追加: プル系のみ（通常版）
+    # - 強制テスト版は configs/strategy_pull_force.yaml
+    # market_spread_bps は「bps単位」(10_000*(ask-bid)/mid)。HLのETH-PERPは 0.33bps 前後が多い。
+    # 発動率が 10〜40% になるように閾値を調整する（直近2hだと p90 付近が 0.34bps）。
+    pull_when_market_spread_bps_gt: 0.34
+    pull_spread_add_bps: 0.1
+    pull_size_factor: 0.7
+    # pullの適用方法:
+    # - symmetric: 両側を同じだけ引く
+    # - one_side: orderflow(signed_volume) の方向に応じて片側だけ引く（逆選択を避けたい用途）
+    pull_mode: one_side

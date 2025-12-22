@@ -1,0 +1,24 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: flow_asksize_thrP95_f05
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline と同一（変更点を1つにする）
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # SV条件（p95固定）
+    flow_window_s: 2
+    flow_thr: 4.2382
+
+    # 追加: sv_window <= -thr のときだけ ASK サイズを落とす（価格は触らない）
+    ask_size_factor_when_sv_neg: 0.5

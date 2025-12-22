@@ -45,7 +45,7 @@ def test_engine_runs_toy_blocks(tmp_path):
     pq.write_table(pa.Table.from_pylist(blocks), blocks_path)
     out_dir = tmp_path / "out"
     trades_path, ledger_path, orders_path = run_mm_sim(
-        blocks_path, out_dir=out_dir, taker_fee_bps=0.0, strategy=strat
+        blocks_path, out_dir=out_dir, taker_fee_bps=0.0, strategy=strat, allow_top_fill=True
     )
     assert trades_path.exists()
     assert ledger_path.exists()
