@@ -74,7 +74,16 @@ def _markout_for_fill(ts_arr: np.ndarray, mid_arr: np.ndarray, ts_ms: int, side:
 
 def _stats(xs: List[float]) -> Dict[str, object]:
     if not xs:
-        return {"n": 0, "mean": None, "p10": None, "p50": None, "p90": None}
+        return {
+            "n": 0,
+            "mean": None,
+            "p10": None,
+            "p50": None,
+            "p90": None,
+            "sum_notional": None,
+            "wmean_markout": None,
+            "markout_cost": None,
+        }
     arr = np.array(xs, dtype=float)
     return {
         "n": int(arr.size),
@@ -82,6 +91,9 @@ def _stats(xs: List[float]) -> Dict[str, object]:
         "p10": float(np.nanpercentile(arr, 10)),
         "p50": float(np.nanpercentile(arr, 50)),
         "p90": float(np.nanpercentile(arr, 90)),
+        "sum_notional": None,
+        "wmean_markout": None,
+        "markout_cost": None,
     }
 
 
@@ -95,30 +107,52 @@ def _fmt(x: object) -> str:
     return str(x)
 
 
+def _default_feature_label(col: str) -> str:
+    name = str(col)
+    if name in ("signed_volume_window", "signed_volume"):
+        return "sv"
+    if name == "micro_bias_bps":
+        return "micro_bias"
+    return name
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="SV（signed_volume_window）条件別に、fill の markout を side ごとに集計する（逆選択の有無を1回で確認）"
+        description="feature 条件別に、fill の markout を side ごとに集計する（逆選択の有無を1回で確認）"
     )
     parser.add_argument("--ledger", default=None, help="入力 ledger.parquet（未指定なら --outputs-dir/--run-id を使用）")
     parser.add_argument(
         "--trades", default=None, help="入力 sim_trades.parquet（未指定なら --outputs-dir/--run-id を使用）"
+    )
+    parser.add_argument(
+        "--features",
+        default=None,
+        help="入力 features.parquet（任意。feature_col が ledger に無い場合や micro_bias 用）",
     )
     parser.add_argument("--outputs-dir", default="outputs", help="mm-sim 出力ディレクトリ（デフォルト: outputs/）")
     parser.add_argument("--run-id", default=None, help="run_id（例: flow_base__20251221_0737）")
     parser.add_argument("--prefix", default="mm_sim_", help="outputs_dir 配下の prefix（デフォルト: mm_sim_）")
     parser.add_argument("--horizon-ms", type=int, default=5000, help="markout のホライズン（ミリ秒）。デフォルト 5000")
     parser.add_argument(
+        "--feature-col",
         "--sv-col",
         default="signed_volume_window",
-        help="ledger から参照する SV 列名（デフォルト signed_volume_window）",
+        help="feature 列名（デフォルト signed_volume_window）。--sv-col は互換用エイリアス",
+    )
+    parser.add_argument(
+        "--feature-label",
+        default=None,
+        help="group 表示用のラベル（省略時は feature_col から自動推定）",
     )
     thr_group = parser.add_mutually_exclusive_group(required=True)
-    thr_group.add_argument("--thr", type=float, default=None, help="SV 閾値（例: 4.2382）。条件は sv>+thr / sv<-thr")
+    thr_group.add_argument(
+        "--thr", type=float, default=None, help="閾値（例: 4.2382）。条件は feature>+thr / feature<-thr"
+    )
     thr_group.add_argument(
         "--thr-quantile",
         type=float,
         default=None,
-        help="|SV| の分位点で閾値を作る（例: 0.95）。thr は ledger の |sv_col| から算出",
+        help="|feature| の分位点で閾値を作る（例: 0.95）。thr は |feature_col| から算出",
     )
     parser.add_argument("--format", choices=["md", "tsv"], default="md", help="出力形式")
     args = parser.parse_args()
@@ -135,28 +169,48 @@ def main() -> int:
 
     ledger = pq.read_table(ledger_path)
     trades = pq.read_table(trades_path)
+    features = pq.read_table(args.features) if args.features else None
 
     if ledger.num_rows == 0 or trades.num_rows == 0:
         raise SystemExit("ledger または trades が空です（集計できません）")
 
     key_col = _pick_join_key(ledger, trades)
-    if args.sv_col not in ledger.schema.names:
-        raise SystemExit(f"ledger に {args.sv_col} がありません（列名を確認してください）")
 
-    # SVマップ（fill時の条件判定に使う）
-    led_py = ledger.to_pydict()
-    led_keys = led_py.get(key_col, []) or []
-    led_sv = led_py.get(args.sv_col, []) or []
-    sv_by_key: Dict[object, float] = {}
-    for k, v in zip(led_keys, led_sv):
+    feature_col = str(args.feature_col)
+    source_table = ledger
+    used_features = False
+    if feature_col not in source_table.schema.names and features is not None:
+        source_table = features
+        used_features = True
+    if used_features and key_col not in source_table.schema.names:
+        raise SystemExit(f"features に {key_col} がありません（join key が一致していません）")
+    if feature_col not in source_table.schema.names:
+        fallback = None
+        if feature_col == "micro_bias" and "micro_bias_bps" in source_table.schema.names:
+            fallback = "micro_bias_bps"
+        elif f"{feature_col}_bps" in source_table.schema.names:
+            fallback = f"{feature_col}_bps"
+        if fallback is not None:
+            feature_col = fallback
+        else:
+            src_name = "features" if features is not None else "ledger"
+            raise SystemExit(f"{src_name} に {feature_col} がありません（列名を確認してください）")
+    feature_label = str(args.feature_label) if args.feature_label else _default_feature_label(feature_col)
+
+    # feature マップ（fill時の条件判定に使う）
+    src_py = source_table.to_pydict()
+    src_keys = src_py.get(key_col, []) or []
+    src_vals = src_py.get(feature_col, []) or []
+    feat_by_key: Dict[object, float] = {}
+    for k, v in zip(src_keys, src_vals):
         if k is None:
             continue
-        sv_f = _as_float(v)
-        if sv_f is None or math.isnan(sv_f):
+        feat_f = _as_float(v)
+        if feat_f is None or math.isnan(feat_f):
             continue
-        sv_by_key[k] = float(sv_f)
-    if not sv_by_key:
-        raise SystemExit("SVマップを作れません（sv_colが全て欠損の可能性）")
+        feat_by_key[k] = float(feat_f)
+    if not feat_by_key:
+        raise SystemExit("feature マップを作れません（feature_col が全て欠損の可能性）")
 
     # 閾値
     if args.thr is not None:
@@ -165,10 +219,10 @@ def main() -> int:
         q = float(args.thr_quantile)
         if not (0.0 < q < 1.0):
             raise SystemExit("--thr-quantile は 0〜1 の範囲で指定してください")
-        abs_vals = np.array([abs(v) for v in sv_by_key.values()], dtype=float)
+        abs_vals = np.array([abs(v) for v in feat_by_key.values()], dtype=float)
         abs_vals = abs_vals[~np.isnan(abs_vals)]
         if abs_vals.size == 0:
-            raise SystemExit("thr を計算できません（|SV| が全て NaN）")
+            raise SystemExit("thr を計算できません（|feature| が全て NaN）")
         thr = float(np.quantile(abs_vals, q))
 
     ts_arr, mid_arr = _build_mid_series(ledger)
@@ -177,19 +231,21 @@ def main() -> int:
     tr_keys = tr_py.get(key_col, []) or []
     tr_ts = tr_py.get("block_ts_ms", []) or []
     tr_side = tr_py.get("side", []) or []
+    tr_px = tr_py.get("price", []) or []
+    tr_sz = tr_py.get("size", []) or []
 
     horizon_ms = int(args.horizon_ms)
     if horizon_ms <= 0:
         raise SystemExit("--horizon-ms は正の数である必要があります")
 
-    groups: Dict[str, List[float]] = {
-        "ask|sv>+thr": [],
-        "ask|sv<-thr": [],
-        "bid|sv<-thr": [],
-        "bid|sv>+thr": [],
+    groups: Dict[str, Dict[str, List[float]]] = {
+        f"ask|{feature_label}>+thr": {"markout": [], "notional": []},
+        f"ask|{feature_label}<-thr": {"markout": [], "notional": []},
+        f"bid|{feature_label}<-thr": {"markout": [], "notional": []},
+        f"bid|{feature_label}>+thr": {"markout": [], "notional": []},
     }
 
-    for k, ts, side in zip(tr_keys, tr_ts, tr_side):
+    for k, ts, side, px, sz in zip(tr_keys, tr_ts, tr_side, tr_px, tr_sz):
         if k is None:
             continue
         ts_i = _as_int(ts)
@@ -199,8 +255,17 @@ def main() -> int:
         if s not in ("buy", "sell"):
             continue
 
-        sv = sv_by_key.get(k)
-        if sv is None:
+        feat = feat_by_key.get(k)
+        if feat is None:
+            continue
+
+        # notional（Σ(px*sz)）
+        px_f = _as_float(px)
+        sz_f = _as_float(sz)
+        if px_f is None or sz_f is None:
+            continue
+        notional = px_f * sz_f
+        if notional == 0:
             continue
 
         markout = _markout_for_fill(ts_arr, mid_arr, ts_i, s, horizon_ms=horizon_ms)
@@ -208,30 +273,51 @@ def main() -> int:
             continue
 
         is_ask = s == "sell"
-        if sv > thr:
+        if feat > thr:
             if is_ask:
-                groups["ask|sv>+thr"].append(markout)
+                groups[f"ask|{feature_label}>+thr"]["markout"].append(markout)
+                groups[f"ask|{feature_label}>+thr"]["notional"].append(notional)
             else:
-                groups["bid|sv>+thr"].append(markout)
-        elif sv < -thr:
+                groups[f"bid|{feature_label}>+thr"]["markout"].append(markout)
+                groups[f"bid|{feature_label}>+thr"]["notional"].append(notional)
+        elif feat < -thr:
             if is_ask:
-                groups["ask|sv<-thr"].append(markout)
+                groups[f"ask|{feature_label}<-thr"]["markout"].append(markout)
+                groups[f"ask|{feature_label}<-thr"]["notional"].append(notional)
             else:
-                groups["bid|sv<-thr"].append(markout)
+                groups[f"bid|{feature_label}<-thr"]["markout"].append(markout)
+                groups[f"bid|{feature_label}<-thr"]["notional"].append(notional)
 
     rows = []
-    for name, xs in groups.items():
+    for name, payload in groups.items():
+        xs = payload.get("markout", [])
+        ws = payload.get("notional", [])
         st = _stats(xs)
+        if xs and ws and len(xs) == len(ws):
+            w = np.array(ws, dtype=float)
+            x = np.array(xs, dtype=float)
+            ok = (~np.isnan(w)) & (~np.isnan(x)) & (w > 0)
+            if int(np.sum(ok)) > 0:
+                w2 = w[ok]
+                x2 = x[ok]
+                sum_notional = float(np.nansum(w2))
+                markout_cost = float(np.nansum(x2 * w2))
+                wmean = float(markout_cost / sum_notional) if sum_notional != 0 else float("nan")
+                st["sum_notional"] = sum_notional
+                st["markout_cost"] = markout_cost
+                st["wmean_markout"] = wmean
         rows.append((name, st))
 
     print(f"ledger={ledger_path}")
     print(f"trades={trades_path}")
-    print(f"sv_col={args.sv_col}  horizon_ms={horizon_ms}  thr={thr}")
+    if used_features:
+        print(f"features={args.features}")
+    print(f"feature_col={feature_col}  feature_label={feature_label}  horizon_ms={horizon_ms}  thr={thr}")
     print("")
 
     if str(args.format) == "md":
-        print("| group | n | mean | p10 | p50 | p90 |")
-        print("| --- | ---: | ---: | ---: | ---: | ---: |")
+        print("| group | n | mean | p10 | p50 | p90 | sum_notional | wmean_markout | markout_cost |")
+        print("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
         for name, st in rows:
             print(
                 "| "
@@ -243,12 +329,15 @@ def main() -> int:
                         _fmt(st["p10"]),
                         _fmt(st["p50"]),
                         _fmt(st["p90"]),
+                        _fmt(st["sum_notional"]),
+                        _fmt(st["wmean_markout"]),
+                        _fmt(st["markout_cost"]),
                     ]
                 )
                 + " |"
             )
     else:
-        print("group\tn\tmean\tp10\tp50\tp90")
+        print("group\tn\tmean\tp10\tp50\tp90\tsum_notional\twmean_markout\tmarkout_cost")
         for name, st in rows:
             print(
                 "\t".join(
@@ -259,6 +348,9 @@ def main() -> int:
                         _fmt(st["p10"]),
                         _fmt(st["p50"]),
                         _fmt(st["p90"]),
+                        _fmt(st["sum_notional"]),
+                        _fmt(st["wmean_markout"]),
+                        _fmt(st["markout_cost"]),
                     ]
                 )
             )
@@ -268,4 +360,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -312,6 +312,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 post_pull_unwind_other_side_size_factor=float(
                     extra.get("post_pull_unwind_other_side_size_factor", 1.0)
                 ),
+                micro_bias_thr_bps=(float(extra["micro_bias_thr_bps"]) if "micro_bias_thr_bps" in extra else None),
+                micro_bias_size_factor=float(extra.get("micro_bias_size_factor", 1.0)),
+                micro_bias_thr_pos_bps=(
+                    float(extra["micro_bias_thr_pos_bps"]) if "micro_bias_thr_pos_bps" in extra else None
+                ),
+                micro_bias_ask_only_size_factor=float(
+                    extra.get("micro_bias_ask_only_size_factor", extra.get("ask_only_size_factor", 1.0))
+                ),
             )
 
             def strategy_fn(block, state):  # type: ignore[no-redef]

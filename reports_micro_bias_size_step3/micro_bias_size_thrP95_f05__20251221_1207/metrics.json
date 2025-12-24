@@ -1,0 +1,34 @@
+{
+  "num_blocks": 3195,
+  "num_fills": 1297,
+  "notional_traded": 181604.4898079641,
+  "fill_rate": 0.20297339593114241,
+  "pnl": 1.27296476749445,
+  "max_drawdown": -0.42588972346005727,
+  "stop_trigger_count": 0,
+  "pull_trigger_count": 0,
+  "stop_trigger_rate": 0.0,
+  "pull_trigger_rate": 0.0,
+  "fills_when_stop": 0,
+  "fills_when_pull": 0,
+  "pnl_when_stop": 0.0,
+  "pnl_when_pull": 0.0,
+  "realized_spread_1s": 0.06034951478414119,
+  "realized_spread_5s": 0.061477197807141296,
+  "realized_spread_15s": 0.053912651592149696,
+  "markout_1s": -0.000887345679015223,
+  "markout_5s": 0.00023166023165826518,
+  "markout_15s": -0.007341576506961855,
+  "inventory": {
+    "mean": 0.06474541471048556,
+    "p10": -0.062249999999999625,
+    "p90": 0.15815000000000015,
+    "p95": 0.17721000000000012,
+    "max_abs": 0.29684999999999995
+  },
+  "fee_breakdown": {
+    "fees": 0.0,
+    "rebates": 0.0,
+    "funding": 0.0
+  }
+}

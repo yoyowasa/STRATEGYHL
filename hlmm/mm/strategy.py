@@ -51,6 +51,12 @@ class StrategyParams:
     post_pull_unwind_spread_add_bps: float = 0.0
     post_pull_unwind_size_factor: float = 1.0
     post_pull_unwind_other_side_size_factor: float = 1.0
+    # micro_bias_bps が閾値を超えた側だけ size-only で縮小
+    micro_bias_thr_bps: Optional[float] = None
+    micro_bias_size_factor: float = 1.0
+    # micro_bias_bps が正側閾値を超えたときだけ ASK サイズを落とす
+    micro_bias_thr_pos_bps: Optional[float] = None
+    micro_bias_ask_only_size_factor: float = 1.0
     strategy_variant: int = 1  # 1: baseline+inventory, 2/3: 拡張用
 
 
@@ -272,6 +278,49 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
                     f = 0.0
                 ask_size = max(0.0, float(ask_size) * f)
                 ask_sv_neg_triggered = True
+
+    # micro_bias で ASK だけ size-only（>+thr_pos の時のみ）
+    if params.micro_bias_thr_pos_bps is not None:
+        try:
+            thr = float(params.micro_bias_thr_pos_bps)
+        except (TypeError, ValueError):
+            thr = 0.0
+        if thr > 0:
+            mb = state.get("micro_bias_bps")
+            try:
+                mb_f = float(mb) if mb is not None else 0.0
+            except (TypeError, ValueError):
+                mb_f = 0.0
+            try:
+                f = float(params.micro_bias_ask_only_size_factor)
+            except (TypeError, ValueError):
+                f = 1.0
+            if f < 0:
+                f = 0.0
+            if mb_f >= thr:
+                ask_size = max(0.0, float(ask_size) * f)
+    # micro_bias で危ない側だけ size-only（>+thr: ASK / <-thr: BID）
+    elif params.micro_bias_thr_bps is not None:
+        try:
+            thr = float(params.micro_bias_thr_bps)
+        except (TypeError, ValueError):
+            thr = 0.0
+        if thr > 0:
+            mb = state.get("micro_bias_bps")
+            try:
+                mb_f = float(mb) if mb is not None else 0.0
+            except (TypeError, ValueError):
+                mb_f = 0.0
+            try:
+                f = float(params.micro_bias_size_factor)
+            except (TypeError, ValueError):
+                f = 1.0
+            if f < 0:
+                f = 0.0
+            if mb_f >= thr:
+                ask_size = max(0.0, float(ask_size) * f)
+            elif mb_f <= -thr:
+                bid_size = max(0.0, float(bid_size) * f)
 
     # inventory skew: mid を在庫方向にシフトし、bid/ask は対称に張る
     inv = position - params.inventory_target

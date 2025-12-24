@@ -1,0 +1,21 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: micro_bias_askonly_thrP99_f05
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline と同一（変更点を1つにする）
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # micro_bias 正側のみ（p99）
+    micro_bias_thr_pos_bps: 0.168308
+    ask_only_size_factor: 0.5

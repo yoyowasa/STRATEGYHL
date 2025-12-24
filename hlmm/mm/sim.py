@@ -97,6 +97,7 @@ def simulate_blocks(
         "signed_volume_window": 0.0,
         "prev_pull_triggered": False,
         "post_pull_unwind_active": False,
+        "micro_bias_bps": None,
     }
     trades: List[dict] = []
     ledger: List[dict] = []
@@ -127,12 +128,18 @@ def simulate_blocks(
         prev_mid = state.get("mid")
         bid = None
         ask = None
+        bid_sz = None
+        ask_sz = None
         try:
             bid = float(top.get("bid_px")) if top.get("bid_px") is not None else None
             ask = float(top.get("ask_px")) if top.get("ask_px") is not None else None
+            bid_sz = float(top.get("bid_sz")) if top.get("bid_sz") is not None else None
+            ask_sz = float(top.get("ask_sz")) if top.get("ask_sz") is not None else None
         except (TypeError, ValueError):
             bid = None
             ask = None
+            bid_sz = None
+            ask_sz = None
         mid = (bid + ask) / 2.0 if bid is not None and ask is not None else None
         mid_ret = None
         abs_mid_ret = None
@@ -146,10 +153,22 @@ def simulate_blocks(
         market_spread_bps = (
             10_000.0 * (ask - bid) / mid if bid is not None and ask is not None and mid not in (None, 0.0) else None
         )
+        micro_bias_bps = None
+        if (
+            bid is not None
+            and ask is not None
+            and bid_sz is not None
+            and ask_sz is not None
+            and (bid_sz + ask_sz) not in (0.0, -0.0)
+            and mid not in (None, 0.0)
+        ):
+            microprice = (ask * bid_sz + bid * ask_sz) / (bid_sz + ask_sz)
+            micro_bias_bps = (microprice - mid) / mid * 10_000.0
         state["mid"] = mid
         state["mid_ret"] = mid_ret
         state["abs_mid_ret"] = abs_mid_ret
         state["market_spread_bps"] = market_spread_bps
+        state["micro_bias_bps"] = micro_bias_bps
         # post-pull unwind 用に、前ブロックの pull 状態を保存
         state["prev_pull_triggered"] = bool(state.get("pull_triggered"))
         # 毎ブロックでリセット（strategy が必要に応じて True にする）

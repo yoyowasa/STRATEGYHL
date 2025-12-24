@@ -1,0 +1,27 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: flow_sym_size_thrP95_f07
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline と同一（変更点を1つにする）
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # 条件: |sv_window| >= thr（p95固定）
+    flow_window_s: 2
+    flow_thr: 4.2382
+
+    # 対称マッピング（size-only）
+    # - sv>+thr: ASKサイズを落とす
+    # - sv<-thr: BIDサイズを落とす
+    one_side_pull_mode: size_only
+    one_side_pull_size_factor: 0.7
