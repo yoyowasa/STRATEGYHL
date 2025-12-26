@@ -1,0 +1,26 @@
+mode: mm_live
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: prod_f15
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline params (same as configs/strategy_baseline.yaml)
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+    # H2' fixed boost
+    boost_when_abs_mid_ret_gt: 6.721220573650064e-05
+    boost_size_factor: 1.5
+    # kill switch (rarely triggered)
+    stop_max_abs_position: 1.0
+    stop_max_intraday_drawdown_usdc: -2.0
+    # live-only guards (handled by live runner)
+    order_batch_sec: 0.1
+    disconnect_guard: true

@@ -240,6 +240,50 @@ def _fills_when(trades: pa.Table, ledger: pa.Table, trigger_column: str) -> int:
     return int(sum(1 for k in trade_keys if k in triggered))
 
 
+def _notional_when(trades: pa.Table, ledger: pa.Table, trigger_column: str) -> float:
+    if trades.num_rows == 0 or ledger.num_rows == 0:
+        return 0.0
+    if trigger_column not in ledger.schema.names:
+        return 0.0
+
+    if "book_event_id" in trades.schema.names and "book_event_id" in ledger.schema.names:
+        key = "book_event_id"
+    elif "block_ts_ms" in trades.schema.names and "block_ts_ms" in ledger.schema.names:
+        key = "block_ts_ms"
+    else:
+        return 0.0
+
+    ledger_py = ledger.to_pydict()
+    keys = ledger_py.get(key, []) or []
+    trig = ledger_py.get(trigger_column, []) or []
+    triggered = {k for k, t in zip(keys, trig) if k is not None and bool(t)}
+
+    trades_py = trades.to_pydict()
+    trade_keys = trades_py.get(key, []) or []
+    if "price" in trades_py and "size" in trades_py:
+        prices = trades_py.get("price") or []
+        sizes = trades_py.get("size") or []
+    elif "px" in trades_py and "sz" in trades_py:
+        prices = trades_py.get("px") or []
+        sizes = trades_py.get("sz") or []
+    else:
+        return 0.0
+    n = min(len(trade_keys), len(prices), len(sizes))
+    total = 0.0
+    for i in range(n):
+        if trade_keys[i] not in triggered:
+            continue
+        px = prices[i]
+        sz = sizes[i]
+        if px is None or sz is None:
+            continue
+        try:
+            total += abs(float(px)) * abs(float(sz))
+        except (TypeError, ValueError):
+            continue
+    return float(total)
+
+
 def compute_metrics(
     ledger_path: str | Path,
     trades_path: str | Path,
@@ -256,6 +300,7 @@ def compute_metrics(
 
     stop_mask = _trigger_mask(ledger, "stop_triggered")
     pull_mask = _trigger_mask(ledger, "pull_triggered")
+    halt_mask = _trigger_mask(ledger, "halt_triggered")
 
     metrics = {
         "num_blocks": int(ledger.num_rows),
@@ -266,16 +311,24 @@ def compute_metrics(
         "max_drawdown": _max_drawdown(ledger),
         "stop_trigger_count": _count_true(ledger, "stop_triggered"),
         "pull_trigger_count": _count_true(ledger, "pull_triggered"),
+        "halt_trigger_count": _count_true(ledger, "halt_triggered"),
         "stop_trigger_rate": float(_count_true(ledger, "stop_triggered") / ledger.num_rows)
         if ledger.num_rows
         else 0.0,
         "pull_trigger_rate": float(_count_true(ledger, "pull_triggered") / ledger.num_rows)
         if ledger.num_rows
         else 0.0,
+        "halt_trigger_rate": float(_count_true(ledger, "halt_triggered") / ledger.num_rows)
+        if ledger.num_rows
+        else 0.0,
         "fills_when_stop": _fills_when(trades, ledger, "stop_triggered"),
         "fills_when_pull": _fills_when(trades, ledger, "pull_triggered"),
+        "fills_when_halt_active": _fills_when(trades, ledger, "halt_triggered"),
+        "notional_when_halt_active": _notional_when(trades, ledger, "halt_triggered"),
         "pnl_when_stop": _pnl_when(ledger, stop_mask),
         "pnl_when_pull": _pnl_when(ledger, pull_mask),
+        "pnl_in_halt_window": _pnl_when(ledger, halt_mask),
+        "pnl_outside_halt_window": _pnl_when(ledger, ~halt_mask),
         "realized_spread_1s": _realized_spread(trades, features, 1000),
         "realized_spread_5s": _realized_spread(trades, features, 5000),
         "realized_spread_15s": _realized_spread(trades, features, 15000),

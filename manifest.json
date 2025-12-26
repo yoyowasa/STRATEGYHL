@@ -1,0 +1,20 @@
+{
+  "git_commit": "28efffb4dc6797f44167455479bfc3037b918109",
+  "blocks_file": "data/blocks_long_20251221_0737.parquet",
+  "fill_model": "lower",
+  "lower_alpha": 0.5,
+  "baseline": {
+    "config": "configs/strategy_baseline.yaml",
+    "output_dir": "outputs_manifest/mm_sim_baseline",
+    "ledger_hash8": "5de4aa23",
+    "sim_trades_hash8": "f8d5f916",
+    "orders_hash8": "46a8260a"
+  },
+  "candidate": {
+    "config": "configs/strategy_boost_abs_mid_ret_p90_f15.yaml",
+    "output_dir": "outputs_manifest/mm_sim_boost_abs_mid_ret_p90_f15",
+    "ledger_hash8": "e1a5fedd",
+    "sim_trades_hash8": "a892e491",
+    "orders_hash8": "49c79da8"
+  }
+}

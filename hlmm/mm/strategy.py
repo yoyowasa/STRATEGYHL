@@ -20,6 +20,15 @@ class StrategyParams:
     stop_when_market_spread_bps_lt: Optional[float] = None
     stop_when_abs_mid_ret_gt: Optional[float] = None
     stop_mode: str = "halt"  # "halt" | "unwind_only"
+    # halt（two-sided halt）
+    halt_when_market_spread_bps_gt: Optional[float] = None
+    halt_when_market_spread_bps_lt: Optional[float] = None
+    halt_when_abs_mid_ret_gt: Optional[float] = None
+    halt_size_factor: float = 0.0
+    # boost（risk-on）
+    boost_when_abs_mid_ret_gt: Optional[float] = None
+    boost_size_factor: float = 1.0
+    boost_only_if_abs_pos_lt: Optional[float] = None
     # pull（baseline + pull）
     pull_when_market_spread_bps_gt: Optional[float] = None
     pull_when_market_spread_bps_lt: Optional[float] = None
@@ -57,6 +66,12 @@ class StrategyParams:
     # micro_bias_bps が正側閾値を超えたときだけ ASK サイズを落とす
     micro_bias_thr_pos_bps: Optional[float] = None
     micro_bias_ask_only_size_factor: float = 1.0
+    # imbalance（L1サイズ偏り）で危ない側だけ size-only
+    imbalance_thr: Optional[float] = None
+    imbalance_size_factor: float = 1.0
+    # micro_pos（スプレッド内位置）で危ない側だけ size-only
+    micro_pos_thr: Optional[float] = None
+    micro_pos_size_factor: float = 1.0
     strategy_variant: int = 1  # 1: baseline+inventory, 2/3: 拡張用
 
 
@@ -71,7 +86,7 @@ def _clamp_position(size: float, params: StrategyParams) -> float:
 def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[str, object]:
     """
     Strategy1: ベーススプレッドに inventory skew を加味した bid/ask を返す。
-    state: mid/spread/imbalance/signed_volume/basis_bps/inventory を含む辞書を想定。
+    state: mid/spread/imbalance/micro_pos/signed_volume/basis_bps/inventory を含む辞書を想定。
     """
     mid = state.get("mid")
     position = float(state.get("position", 0.0) or 0.0)
@@ -81,6 +96,51 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
         mid_f = float(mid)
     except (TypeError, ValueError):
         return {"orders": [], "halt": True, "post_pull_unwind_active": False}
+
+    inv = position - params.inventory_target
+
+    # halt 条件（two-sided）
+    halt_triggered = False
+    if (
+        params.halt_when_market_spread_bps_gt is not None
+        or params.halt_when_market_spread_bps_lt is not None
+    ):
+        ms = state.get("market_spread_bps")
+        try:
+            ms_f = float(ms) if ms is not None else None
+        except (TypeError, ValueError):
+            ms_f = None
+        if ms_f is not None:
+            if params.halt_when_market_spread_bps_gt is not None and ms_f > float(params.halt_when_market_spread_bps_gt):
+                halt_triggered = True
+            if params.halt_when_market_spread_bps_lt is not None and ms_f < float(params.halt_when_market_spread_bps_lt):
+                halt_triggered = True
+    if not halt_triggered and params.halt_when_abs_mid_ret_gt is not None:
+        amr = state.get("abs_mid_ret")
+        try:
+            amr_f = float(amr) if amr is not None else None
+        except (TypeError, ValueError):
+            amr_f = None
+        if amr_f is not None and amr_f > float(params.halt_when_abs_mid_ret_gt):
+            halt_triggered = True
+
+    # boost 条件（risk-on）
+    boost_triggered = False
+    if params.boost_when_abs_mid_ret_gt is not None:
+        amr = state.get("abs_mid_ret")
+        try:
+            amr_f = float(amr) if amr is not None else None
+        except (TypeError, ValueError):
+            amr_f = None
+        if amr_f is not None and amr_f > float(params.boost_when_abs_mid_ret_gt):
+            boost_triggered = True
+    if boost_triggered and params.boost_only_if_abs_pos_lt is not None:
+        try:
+            cap = float(params.boost_only_if_abs_pos_lt)
+        except (TypeError, ValueError):
+            cap = None
+        if cap is not None and cap >= 0 and abs(inv) >= cap:
+            boost_triggered = False
 
     # stop 条件
     stop_triggered = False
@@ -128,6 +188,8 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
                     "stop_triggered": True,
                     "pull_triggered": False,
                     "post_pull_unwind_active": False,
+                    "halt_triggered": halt_triggered,
+                    "boost_triggered": boost_triggered,
                 }
 
             # 在庫を減らす方向にのみ注文（ロングなら sell、ショートなら buy）
@@ -143,6 +205,8 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
                     "stop_triggered": True,
                     "pull_triggered": False,
                     "post_pull_unwind_active": False,
+                    "halt_triggered": halt_triggered,
+                    "boost_triggered": boost_triggered,
                 }
 
             return {
@@ -151,6 +215,8 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
                 "stop_triggered": True,
                 "pull_triggered": False,
                 "post_pull_unwind_active": False,
+                "halt_triggered": halt_triggered,
+                "boost_triggered": boost_triggered,
                 "strategy_spread_bps": None,
                 "strategy_size": size,
             }
@@ -160,6 +226,8 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
             "stop_triggered": True,
             "pull_triggered": False,
             "post_pull_unwind_active": False,
+            "halt_triggered": halt_triggered,
+            "boost_triggered": boost_triggered,
         }
 
     # スプレッド/サイズ（pullで変える）
@@ -322,8 +390,53 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
             elif mb_f <= -thr:
                 bid_size = max(0.0, float(bid_size) * f)
 
+    # imbalance で危ない側だけ size-only（>+thr: ASK / <-thr: BID）
+    if params.imbalance_thr is not None:
+        try:
+            thr = float(params.imbalance_thr)
+        except (TypeError, ValueError):
+            thr = 0.0
+        if thr > 0:
+            imb = state.get("imbalance")
+            try:
+                imb_f = float(imb) if imb is not None else 0.0
+            except (TypeError, ValueError):
+                imb_f = 0.0
+            try:
+                f = float(params.imbalance_size_factor)
+            except (TypeError, ValueError):
+                f = 1.0
+            if f < 0:
+                f = 0.0
+            if imb_f >= thr:
+                ask_size = max(0.0, float(ask_size) * f)
+            elif imb_f <= -thr:
+                bid_size = max(0.0, float(bid_size) * f)
+
+    # micro_pos で危ない側だけ size-only（>+thr: ASK / <-thr: BID）
+    if params.micro_pos_thr is not None:
+        try:
+            thr = float(params.micro_pos_thr)
+        except (TypeError, ValueError):
+            thr = 0.0
+        if thr > 0:
+            mp = state.get("micro_pos")
+            try:
+                mp_f = float(mp) if mp is not None else 0.0
+            except (TypeError, ValueError):
+                mp_f = 0.0
+            try:
+                f = float(params.micro_pos_size_factor)
+            except (TypeError, ValueError):
+                f = 1.0
+            if f < 0:
+                f = 0.0
+            if mp_f >= thr:
+                ask_size = max(0.0, float(ask_size) * f)
+            elif mp_f <= -thr:
+                bid_size = max(0.0, float(bid_size) * f)
+
     # inventory skew: mid を在庫方向にシフトし、bid/ask は対称に張る
-    inv = position - params.inventory_target
     if pull_triggered and params.pull_window_max_abs_position is not None:
         cap = float(params.pull_window_max_abs_position)
         # 1回の約定で cap を超えないよう、サイズをクランプする
@@ -400,6 +513,51 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
     bid_size = _clamp_position(float(bid_size), params)
     ask_size = _clamp_position(float(ask_size), params)
 
+    if boost_triggered:
+        try:
+            boost_factor = float(params.boost_size_factor)
+        except (TypeError, ValueError):
+            boost_factor = 1.0
+        if boost_factor < 0:
+            boost_factor = 0.0
+        bid_size = max(0.0, float(bid_size) * boost_factor)
+        ask_size = max(0.0, float(ask_size) * boost_factor)
+        bid_size = _clamp_position(float(bid_size), params)
+        ask_size = _clamp_position(float(ask_size), params)
+
+    if halt_triggered:
+        try:
+            halt_factor = float(params.halt_size_factor)
+        except (TypeError, ValueError):
+            halt_factor = 0.0
+        if halt_factor < 0:
+            halt_factor = 0.0
+        bid_size = max(0.0, float(bid_size) * halt_factor)
+        ask_size = max(0.0, float(ask_size) * halt_factor)
+        bid_size = _clamp_position(float(bid_size), params)
+        ask_size = _clamp_position(float(ask_size), params)
+        if bid_size <= 0 and ask_size <= 0:
+            return {
+                "orders": [],
+                "halt": True,
+                "bid_px": bid_px,
+                "ask_px": ask_px,
+                "skew": skew_bps,
+                "stop_triggered": False,
+                "pull_triggered": pull_triggered,
+                "post_pull_unwind_active": post_pull_unwind_active,
+                "pull_side": pull_side,
+                "ask_sv_neg_triggered": ask_sv_neg_triggered,
+                "strategy_bid_spread_bps": bid_spread_bps,
+                "strategy_ask_spread_bps": ask_spread_bps,
+                "strategy_bid_size": bid_size,
+                "strategy_ask_size": ask_size,
+                "strategy_spread_bps": max(bid_spread_bps, ask_spread_bps),
+                "strategy_size": max(bid_size, ask_size),
+                "halt_triggered": True,
+                "boost_triggered": boost_triggered,
+            }
+
     orders = [
         Order(side="buy", size=bid_size, price=bid_px, post_only=True),
         Order(side="sell", size=ask_size, price=ask_px, post_only=True),
@@ -421,4 +579,6 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
         "strategy_ask_size": ask_size,
         "strategy_spread_bps": max(bid_spread_bps, ask_spread_bps),
         "strategy_size": max(bid_size, ask_size),
+        "halt_triggered": halt_triggered,
+        "boost_triggered": boost_triggered,
     }

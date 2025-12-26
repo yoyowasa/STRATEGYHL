@@ -7,7 +7,7 @@ from typing import Any, Mapping
 import yaml
 
 
-ALLOWED_MODES = {"research", "mm_sim", "mm_replay"}
+ALLOWED_MODES = {"research", "mm_sim", "mm_replay", "mm_shadow", "mm_live"}
 
 
 class ConfigError(ValueError):

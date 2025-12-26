@@ -5,7 +5,11 @@ __pycache__/
 *.pyc
 
 outputs/
+outputs*/
 raw_data/
 reports/
+reports*/
 
 data/*.parquet
+data/windows*/
+configs/archive/

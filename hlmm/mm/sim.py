@@ -86,6 +86,8 @@ def simulate_blocks(
         "drawdown": 0.0,
         "stop_triggered": False,
         "pull_triggered": False,
+        "halt_triggered": False,
+        "boost_triggered": False,
         "strategy_spread_bps": None,
         "strategy_size": None,
         "strategy_bid_spread_bps": None,
@@ -98,6 +100,8 @@ def simulate_blocks(
         "prev_pull_triggered": False,
         "post_pull_unwind_active": False,
         "micro_bias_bps": None,
+        "imbalance": None,
+        "micro_pos": None,
     }
     trades: List[dict] = []
     ledger: List[dict] = []
@@ -154,26 +158,35 @@ def simulate_blocks(
             10_000.0 * (ask - bid) / mid if bid is not None and ask is not None and mid not in (None, 0.0) else None
         )
         micro_bias_bps = None
-        if (
-            bid is not None
-            and ask is not None
-            and bid_sz is not None
-            and ask_sz is not None
-            and (bid_sz + ask_sz) not in (0.0, -0.0)
-            and mid not in (None, 0.0)
-        ):
-            microprice = (ask * bid_sz + bid * ask_sz) / (bid_sz + ask_sz)
+        imbalance = None
+        micro_pos = None
+        microprice = None
+        if bid_sz is not None and ask_sz is not None:
+            denom = bid_sz + ask_sz
+            if denom not in (0.0, -0.0):
+                imbalance = (bid_sz - ask_sz) / denom
+                if bid is not None and ask is not None:
+                    microprice = (ask * bid_sz + bid * ask_sz) / denom
+        if microprice is not None and mid not in (None, 0.0):
             micro_bias_bps = (microprice - mid) / mid * 10_000.0
+        if microprice is not None and bid is not None and ask is not None and mid is not None:
+            spread = ask - bid
+            if spread not in (0.0, -0.0):
+                micro_pos = (microprice - mid) / spread
         state["mid"] = mid
         state["mid_ret"] = mid_ret
         state["abs_mid_ret"] = abs_mid_ret
         state["market_spread_bps"] = market_spread_bps
         state["micro_bias_bps"] = micro_bias_bps
+        state["imbalance"] = imbalance
+        state["micro_pos"] = micro_pos
         # post-pull unwind 用に、前ブロックの pull 状態を保存
         state["prev_pull_triggered"] = bool(state.get("pull_triggered"))
         # 毎ブロックでリセット（strategy が必要に応じて True にする）
         state["stop_triggered"] = False
         state["pull_triggered"] = False
+        state["halt_triggered"] = False
+        state["boost_triggered"] = False
         state["strategy_spread_bps"] = None
         state["strategy_size"] = None
         state["strategy_bid_spread_bps"] = None
@@ -449,6 +462,8 @@ def simulate_blocks(
                 "market_spread_bps": state.get("market_spread_bps"),
                 "stop_triggered": bool(state.get("stop_triggered")),
                 "pull_triggered": bool(state.get("pull_triggered")),
+                "halt_triggered": bool(state.get("halt_triggered")),
+                "boost_triggered": bool(state.get("boost_triggered")),
                 "strategy_spread_bps": state.get("strategy_spread_bps"),
                 "strategy_size": state.get("strategy_size"),
                 "strategy_bid_spread_bps": state.get("strategy_bid_spread_bps"),

@@ -1,0 +1,22 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: boost_abs_mid_ret_p90_f15_inv_cap
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline（configs/strategy_baseline.yaml と同一）
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+    # H2'：abs_mid_ret ブースト（固定値）
+    boost_when_abs_mid_ret_gt: 6.721220573650064e-05
+    boost_size_factor: 1.5
+    # ブースト発動は「在庫が軽いときだけ」
+    boost_only_if_abs_pos_lt: 0.3

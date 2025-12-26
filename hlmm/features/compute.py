@@ -88,6 +88,21 @@ def _calc_micro_bias_bps(
     return micro_bias_bps, False
 
 
+def _calc_micro_pos(
+    mid: float, mid_missing: bool, microprice: float, micro_missing: bool, spread: float, spread_missing: bool
+) -> tuple[float, bool]:
+    if mid_missing or micro_missing or spread_missing:
+        return math.nan, True
+    if mid is None or microprice is None or spread is None:
+        return math.nan, True
+    if math.isnan(mid) or math.isnan(microprice) or math.isnan(spread):
+        return math.nan, True
+    if spread == 0:
+        return math.nan, True
+    micro_pos = (microprice - mid) / spread
+    return micro_pos, False
+
+
 def _calc_signed_volume(trades: list[Mapping[str, object]]) -> tuple[float, bool, float | None]:
     if not trades:
         return math.nan, True, None
@@ -128,6 +143,9 @@ def compute_features(blocks: Iterable[Mapping[str, object]]) -> List[dict]:
         microprice, micro_missing = _calc_microprice(top)
         imbalance, imbalance_missing = _calc_imbalance(top)
         micro_bias_bps, micro_bias_missing = _calc_micro_bias_bps(mid, mid_missing, microprice, micro_missing)
+        micro_pos, micro_pos_missing = _calc_micro_pos(
+            mid, mid_missing, microprice, micro_missing, spread, spread_missing
+        )
         signed_vol, signed_vol_missing, last_trade_px = _calc_signed_volume(trades)
         basis_bps, basis_missing = _calc_basis_bps(mid, mid_missing, last_trade_px)
 
@@ -138,6 +156,7 @@ def compute_features(blocks: Iterable[Mapping[str, object]]) -> List[dict]:
             "spread": spread,
             "microprice": microprice,
             "micro_bias_bps": micro_bias_bps,
+            "micro_pos": micro_pos,
             "imbalance": imbalance,
             "signed_volume": signed_vol,
             "basis_bps": basis_bps,
@@ -145,6 +164,7 @@ def compute_features(blocks: Iterable[Mapping[str, object]]) -> List[dict]:
             "missing_spread": spread_missing,
             "missing_microprice": micro_missing,
             "missing_micro_bias_bps": micro_bias_missing,
+            "missing_micro_pos": micro_pos_missing,
             "missing_imbalance": imbalance_missing,
             "missing_signed_volume": signed_vol_missing,
             "missing_basis_bps": basis_missing,

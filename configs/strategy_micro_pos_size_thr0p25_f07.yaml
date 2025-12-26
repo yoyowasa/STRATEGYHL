@@ -1,0 +1,21 @@
+mode: mm_sim
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: micro_pos_size_thr0p25_f07
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    # baseline (keep only one change)
+    base_spread_bps: 0.15
+    base_size: 0.1
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+
+    # micro_pos (microprice position inside spread)
+    micro_pos_thr: 0.25
+    micro_pos_size_factor: 0.7

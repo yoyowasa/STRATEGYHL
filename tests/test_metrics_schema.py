@@ -31,12 +31,18 @@ def test_metrics_schema(tmp_path: Path):
         "max_drawdown",
         "stop_trigger_count",
         "pull_trigger_count",
+        "halt_trigger_count",
         "stop_trigger_rate",
         "pull_trigger_rate",
+        "halt_trigger_rate",
         "fills_when_stop",
         "fills_when_pull",
+        "fills_when_halt_active",
+        "notional_when_halt_active",
         "pnl_when_stop",
         "pnl_when_pull",
+        "pnl_in_halt_window",
+        "pnl_outside_halt_window",
         "realized_spread_1s",
         "realized_spread_5s",
         "markout_5s",
@@ -50,10 +56,16 @@ def test_metrics_schema(tmp_path: Path):
     assert metrics["max_drawdown"] == pytest.approx(0.0)
     assert metrics["stop_trigger_count"] == 0
     assert metrics["pull_trigger_count"] == 0
+    assert metrics["halt_trigger_count"] == 0
+    assert metrics["halt_trigger_rate"] == pytest.approx(0.0)
     assert metrics["fills_when_stop"] == 0
     assert metrics["fills_when_pull"] == 0
+    assert metrics["fills_when_halt_active"] == 0
+    assert metrics["notional_when_halt_active"] == pytest.approx(0.0)
     assert metrics["pnl_when_stop"] == pytest.approx(0.0)
     assert metrics["pnl_when_pull"] == pytest.approx(0.0)
+    assert metrics["pnl_in_halt_window"] == pytest.approx(0.0)
+    assert metrics["pnl_outside_halt_window"] == pytest.approx(1.0)
     assert "mean" in metrics["inventory"]
     assert "p95" in metrics["inventory"]
     assert "max_abs" in metrics["inventory"]

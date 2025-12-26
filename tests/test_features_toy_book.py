@@ -19,6 +19,7 @@ def test_toy_book_features():
     assert feats["missing_spread"] is False
     assert feats["missing_microprice"] is False
     assert feats["missing_micro_bias_bps"] is False
+    assert feats["missing_micro_pos"] is False
     assert feats["missing_imbalance"] is False
     assert feats["missing_signed_volume"] is True
 
@@ -26,5 +27,6 @@ def test_toy_book_features():
     assert feats["spread"] == pytest.approx(1.0)
     assert feats["microprice"] == pytest.approx((100 * 1 + 101 * 2) / 3.0)
     assert feats["micro_bias_bps"] == pytest.approx(((100 * 1 + 101 * 2) / 3.0 - 100.5) / 100.5 * 1e4)
+    assert feats["micro_pos"] == pytest.approx(((100 * 1 + 101 * 2) / 3.0 - 100.5) / 1.0)
     assert feats["imbalance"] == pytest.approx((2 - 1) / 3.0)
     assert math.isnan(feats["signed_volume"])

@@ -267,6 +267,27 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     float(extra["stop_when_abs_mid_ret_gt"]) if "stop_when_abs_mid_ret_gt" in extra else None
                 ),
                 stop_mode=str(extra.get("stop_mode", "halt")),
+                halt_when_market_spread_bps_gt=(
+                    float(extra["halt_when_market_spread_bps_gt"])
+                    if "halt_when_market_spread_bps_gt" in extra
+                    else None
+                ),
+                halt_when_market_spread_bps_lt=(
+                    float(extra["halt_when_market_spread_bps_lt"])
+                    if "halt_when_market_spread_bps_lt" in extra
+                    else None
+                ),
+                halt_when_abs_mid_ret_gt=(
+                    float(extra["halt_when_abs_mid_ret_gt"]) if "halt_when_abs_mid_ret_gt" in extra else None
+                ),
+                halt_size_factor=float(extra.get("halt_size_factor", 0.0)),
+                boost_when_abs_mid_ret_gt=(
+                    float(extra["boost_when_abs_mid_ret_gt"]) if "boost_when_abs_mid_ret_gt" in extra else None
+                ),
+                boost_size_factor=float(extra.get("boost_size_factor", 1.0)),
+                boost_only_if_abs_pos_lt=(
+                    float(extra["boost_only_if_abs_pos_lt"]) if "boost_only_if_abs_pos_lt" in extra else None
+                ),
                 pull_when_market_spread_bps_gt=(
                     float(extra["pull_when_market_spread_bps_gt"])
                     if "pull_when_market_spread_bps_gt" in extra
@@ -320,6 +341,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 micro_bias_ask_only_size_factor=float(
                     extra.get("micro_bias_ask_only_size_factor", extra.get("ask_only_size_factor", 1.0))
                 ),
+                imbalance_thr=(
+                    float(extra["imbalance_thr"])
+                    if "imbalance_thr" in extra
+                    else (float(extra["imb1_thr"]) if "imb1_thr" in extra else None)
+                ),
+                imbalance_size_factor=float(extra.get("imbalance_size_factor", extra.get("imb1_size_factor", 1.0))),
+                micro_pos_thr=(float(extra["micro_pos_thr"]) if "micro_pos_thr" in extra else None),
+                micro_pos_size_factor=float(extra.get("micro_pos_size_factor", 1.0)),
             )
 
             def strategy_fn(block, state):  # type: ignore[no-redef]
@@ -342,6 +371,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 res = decide_orders(state, params)
                 state["stop_triggered"] = bool(res.get("stop_triggered"))
                 state["pull_triggered"] = bool(res.get("pull_triggered"))
+                state["halt_triggered"] = bool(res.get("halt_triggered"))
+                state["boost_triggered"] = bool(res.get("boost_triggered"))
                 state["pull_side"] = res.get("pull_side")
                 state["strategy_spread_bps"] = res.get("strategy_spread_bps")
                 state["strategy_size"] = res.get("strategy_size")
