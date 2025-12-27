@@ -3,6 +3,7 @@
 from .fill_models import FillResult, fill_order_lower, fill_order_upper
 from .rounding import MAX_DECIMALS, round_price, round_size
 from .replay import apply_replay, run_replay
+from .shadow import run_shadow
 from .sim import Order, run_mm_sim, simulate_blocks
 from .strategy import StrategyParams, decide_orders
 
@@ -18,6 +19,7 @@ __all__ = [
     "fill_order_upper",
     "StrategyParams",
     "decide_orders",
+    "run_shadow",
     "apply_replay",
     "run_replay",
 ]
