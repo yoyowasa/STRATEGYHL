@@ -1,0 +1,13 @@
+diff --git a/hlmm/mm/strategy.py b/hlmm/mm/strategy.py
+index 9aaa74c..1e86007 100644
+--- a/hlmm/mm/strategy.py
++++ b/hlmm/mm/strategy.py
+@@ -3,7 +3,7 @@ from __future__ import annotations
+ from dataclasses import dataclass
+ from typing import Dict, Mapping, Optional
+ 
+-from hlmm.mm import Order
++from hlmm.mm.sim import Order
+ 
+ 
+ @dataclass(frozen=True)

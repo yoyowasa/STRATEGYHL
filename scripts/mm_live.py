@@ -1,11 +1,38 @@
 from __future__ import annotations
 
 import argparse
+import os
+from pathlib import Path
 
 from hlmm.live import run_live
 
 
+def _load_dotenv() -> None:
+    candidates = [Path.cwd() / ".env", Path(__file__).resolve().parent.parent / ".env"]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, val = line.split("=", 1)
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            val = val.strip()
+            if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
+                val = val[1:-1]
+            os.environ[key] = val
+        return
+
+
 def main() -> int:
+    _load_dotenv()
     parser = argparse.ArgumentParser(description="Run live/shadow market making loop.")
     parser.add_argument("--config", required=True, help="Config YAML path.")
     parser.add_argument("--mode", required=True, choices=["live", "shadow"], help="live or shadow.")

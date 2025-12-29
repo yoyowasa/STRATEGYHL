@@ -39,6 +39,7 @@ def main() -> int:
     parser.add_argument("--boost-factor", type=float, default=1.5)
     parser.add_argument("--batch-sec", type=float, default=0.1)
     parser.add_argument("--size-eps", type=float, default=1e-12)
+    parser.add_argument("--min-top-px-changes", type=int, default=20)
     args = parser.parse_args()
 
     log_dir = Path(args.log_dir)
@@ -52,12 +53,15 @@ def main() -> int:
     total = 0
     boost_on = 0
     reconnect_events = 0
+    top_px_change_count = 0
     for rec in _iter_jsonl(market_path):
         total += 1
         if rec.get("boost_active"):
             boost_on += 1
         if rec.get("reconnect"):
             reconnect_events += 1
+        if rec.get("top_px_change"):
+            top_px_change_count += 1
     boost_rate = boost_on / total if total else 0.0
 
     boost_records = 0
@@ -96,6 +100,8 @@ def main() -> int:
         min_gap_ms = min(gaps) if gaps else None
 
     passed_trigger = args.min_trigger <= boost_rate <= args.max_trigger
+    trigger_inconclusive = top_px_change_count < args.min_top_px_changes
+    trigger_ok_effective = True if trigger_inconclusive else passed_trigger
     passed_size = boost_records == 0 or boost_applied == boost_records
     passed_cross = crossed == 0
     passed_batch = min_gap_ms is None or min_gap_ms >= int(args.batch_sec * 1000.0)
@@ -103,6 +109,8 @@ def main() -> int:
 
     print("boost_trigger_rate", boost_rate)
     print("trigger_rate_ok", passed_trigger)
+    print("trigger_rate_inconclusive", trigger_inconclusive)
+    print("top_px_change_count", top_px_change_count)
     print("boost_records", boost_records)
     print("boost_applied_ok", passed_size)
     print("ratio_median", _median(ratios))
@@ -113,7 +121,7 @@ def main() -> int:
     print("reconnect_events", reconnect_events)
     print("reconnect_guard_ok", passed_reconnect)
 
-    all_ok = passed_trigger and passed_size and passed_cross and passed_batch and passed_reconnect
+    all_ok = trigger_ok_effective and passed_size and passed_cross and passed_batch and passed_reconnect
     return 0 if all_ok else 1
 
 

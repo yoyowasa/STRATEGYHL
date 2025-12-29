@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -151,6 +152,15 @@ def _canonical_symbol(value: str) -> str:
     return norm
 
 
+def _exchange_coin(value: str) -> str:
+    norm = _canonical_symbol(value)
+    if norm.endswith("USDC") and "/" not in norm:
+        base = norm[: -len("USDC")]
+        if base:
+            return f"{base}/USDC"
+    return norm
+
+
 def _resolve_api_coin(base_url: str, coin: str) -> str:
     raw = coin.strip()
     norm = re.sub(r"[^a-zA-Z0-9@]", "", raw).upper()
@@ -218,24 +228,30 @@ class _OrderSender:
     ) -> None:
         self._mode = mode
         self._event_cb = event_cb
-        self._client = None
-        self._symbol = None
+        self._exchange = None
+        self._coin = None
+        self._account_address = None
+        self._cloid_cls = None
         self._disabled_reason = None
         if mode != "live":
             self._disabled_reason = "shadow_mode"
             return
 
-        client, symbol, reason = self._init_client(base_url, coin, secret_env)
-        if client is None or symbol is None:
+        exchange, trade_coin, account_address, cloid_cls, reason = self._init_client(
+            base_url, coin, secret_env
+        )
+        if exchange is None or trade_coin is None:
             self._disabled_reason = reason or "sender_unavailable"
             self._event_cb("sender_disabled", {"reason": self._disabled_reason})
             return
-        self._client = client
-        self._symbol = symbol
+        self._exchange = exchange
+        self._coin = trade_coin
+        self._account_address = account_address
+        self._cloid_cls = cloid_cls
 
     @property
     def enabled(self) -> bool:
-        return self._client is not None and self._symbol is not None and self._mode == "live"
+        return self._exchange is not None and self._coin is not None and self._mode == "live"
 
     @property
     def disabled_reason(self) -> Optional[str]:
@@ -247,37 +263,48 @@ class _OrderSender:
         except ImportError:
             return None, None, "missing_eth_account"
         try:
-            from hyperliquid import HyperliquidSync
+            from hyperliquid.exchange import Exchange
+            from hyperliquid.utils.types import Cloid
         except ImportError:
-            return None, None, "missing_hyperliquid"
+            return None, None, None, None, "missing_hyperliquid_sdk"
 
         private_key = os.environ.get(secret_env)
         if not private_key:
-            return None, None, f"missing_env:{secret_env}"
+            return None, None, None, None, f"missing_env:{secret_env}"
 
         try:
-            address = Account.from_key(private_key).address
+            wallet = Account.from_key(private_key)
+            address = wallet.address
         except Exception as exc:  # noqa: BLE001
-            return None, None, f"invalid_private_key:{exc}"
+            return None, None, None, None, f"invalid_private_key:{exc}"
 
-        client = HyperliquidSync(
-            {
-                "privateKey": private_key,
-                "walletAddress": address,
-                "enableRateLimit": True,
-            }
-        )
-        if base_url and base_url.rstrip("/") != "https://api.hyperliquid.xyz":
-            client.urls["api"]["public"] = base_url
-            client.urls["api"]["private"] = base_url
-        client.options["defaultType"] = "swap"
-        symbol = client.coin_to_market_id(coin)
-        return client, symbol, None
+        exchange = Exchange(wallet=wallet, base_url=base_url or None)
+        trade_coin = _exchange_coin(coin)
+        return exchange, trade_coin, address, Cloid, None
 
     def _skip_status(self) -> dict:
         if self._mode == "shadow":
             return {"status": "skipped_shadow"}
         return {"status": "skipped_no_sender", "reason": self._disabled_reason}
+
+    def _parse_sdk_status(self, res: object) -> tuple[str, Optional[str], Optional[int]]:
+        if not isinstance(res, dict):
+            return "error", "invalid_response", None
+        if res.get("status") != "ok":
+            return "error", str(res), None
+        data = res.get("response", {}).get("data", {})
+        statuses = data.get("statuses", [])
+        if isinstance(statuses, list) and statuses:
+            st = statuses[0]
+            if isinstance(st, dict):
+                if "error" in st:
+                    return "error", str(st.get("error")), None
+                for key in ("resting", "filled", "partial", "done"):
+                    info = st.get(key)
+                    if isinstance(info, dict):
+                        oid = info.get("oid") or info.get("orderId")
+                        return "sent", None, oid
+        return "sent", None, None
 
     def send_new(self, side: str, size: float, price: Optional[float], client_oid: str) -> dict:
         if not self.enabled:
@@ -285,41 +312,59 @@ class _OrderSender:
         if price is None:
             return {"status": "error", "error": "missing_price"}
         try:
-            res = self._client.create_order(
-                self._symbol,
-                "limit",
-                side,
-                size,
-                price,
-                params={"postOnly": True, "clientOrderId": client_oid},
+            cloid = self._cloid_cls.from_str(client_oid) if self._cloid_cls else None
+            res = self._exchange.order(
+                name=self._coin,
+                is_buy=side == "buy",
+                sz=size,
+                limit_px=price,
+                order_type={"limit": {"tif": "Alo"}},
+                reduce_only=False,
+                cloid=cloid,
             )
         except Exception as exc:  # noqa: BLE001
             self._event_cb("order_send_error", {"action": "new", "error": str(exc)})
             return {"status": "error", "error": str(exc)}
-        return {"status": "sent", "exchange_id": res.get("id")}
+        status, error, exchange_id = self._parse_sdk_status(res)
+        if status != "sent":
+            return {"status": "error", "error": error or "order_rejected"}
+        return {"status": "sent", "exchange_id": exchange_id}
 
     def send_cancel(self, client_oid: str) -> dict:
         if not self.enabled:
             return self._skip_status()
         try:
-            self._client.cancel_orders([], self._symbol, params={"clientOrderId": client_oid})
+            cloid = self._cloid_cls.from_str(client_oid) if self._cloid_cls else None
+            res = self._exchange.cancel_by_cloid(self._coin, cloid)
         except Exception as exc:  # noqa: BLE001
             self._event_cb("order_send_error", {"action": "cancel", "error": str(exc)})
             return {"status": "error", "error": str(exc)}
+        status, error, _ = self._parse_sdk_status(res)
+        if status != "sent":
+            return {"status": "error", "error": error or "cancel_rejected"}
         return {"status": "sent"}
 
     def cancel_all(self) -> dict:
         if not self.enabled:
             return self._skip_status()
         try:
-            open_orders = self._client.fetch_open_orders(self._symbol)
-            ids = [o.get("id") for o in open_orders if o.get("id")]
-            if ids:
-                self._client.cancel_orders(ids, self._symbol)
+            if not self._account_address:
+                raise RuntimeError("missing_account_address")
+            open_orders = self._exchange.info.open_orders(self._account_address)
+            cancels = [
+                {"coin": o.get("coin"), "oid": o.get("oid")}
+                for o in open_orders
+                if o.get("coin") == self._coin and o.get("oid") is not None
+            ]
+            if cancels:
+                res = self._exchange.bulk_cancel(cancels)
+                status, error, _ = self._parse_sdk_status(res)
+                if status != "sent":
+                    return {"status": "error", "error": error or "cancel_rejected"}
         except Exception as exc:  # noqa: BLE001
             self._event_cb("order_send_error", {"action": "cancel_all", "error": str(exc)})
             return {"status": "error", "error": str(exc)}
-        return {"status": "sent", "cancelled": len(ids) if "ids" in locals() else 0}
+        return {"status": "sent", "cancelled": len(cancels) if "cancels" in locals() else 0}
 
 
 def run_live(
@@ -396,7 +441,7 @@ def run_live(
     api_coin = _resolve_api_coin(base_url, coin)
     symbol = _canonical_symbol(coin)
 
-    sender = _OrderSender(mode=mode, base_url=base_url, coin=api_coin, secret_env=secret_env, event_cb=log_event)
+    sender = _OrderSender(mode=mode, base_url=base_url, coin=coin, secret_env=secret_env, event_cb=log_event)
     log_event(
         "startup",
         {
@@ -416,6 +461,8 @@ def run_live(
 
     active_orders: Dict[str, Optional[dict]] = {"buy": None, "sell": None}
     prev_mid: Optional[float] = None
+    prev_best_bid: Optional[float] = None
+    prev_best_ask: Optional[float] = None
     prev_ts: Optional[int] = None
     prev_boost: Optional[bool] = None
     nonce_counter = _now_ms()
@@ -450,6 +497,13 @@ def run_live(
     seen_trade_ids: set[str] = set()
     seen_trade_queue: Deque[str] = deque()
     max_seen = 5000
+    poll_total = 0
+    last_poll_ts: Optional[int] = None
+    ws_connected = False
+    ws_msg_total = 0
+    ws_l2book_total = 0
+    last_ws_msg_ts: Optional[int] = None
+    prev_book_hash: Optional[str] = None
 
     window_ms: Optional[int] = None
     if params.pull_signed_volume_window_s is not None:
@@ -506,12 +560,44 @@ def run_live(
             best_bid, bid_sz1 = _best_level(bids)
             best_ask, ask_sz1 = _best_level(asks)
 
+            poll_total += 1
+            last_poll_ts = ts_ms
+            log_event(
+                "poll_status",
+                {
+                    "poll_total": poll_total,
+                    "last_poll_ts": last_poll_ts,
+                    "last_ts": last_poll_ts,
+                    "ws_connected": ws_connected,
+                    "ws_msg_total": ws_msg_total,
+                    "ws_l2book_total": ws_l2book_total,
+                    "last_ws_msg_ts": last_ws_msg_ts,
+                },
+            )
+
             mid = (best_bid + best_ask) / 2.0 if best_bid is not None and best_ask is not None else None
+            reconnect = False
+            if reconnect_gap_ms is not None and prev_ts is not None:
+                try:
+                    if ts_ms - prev_ts >= int(reconnect_gap_ms):
+                        reconnect = True
+                        prev_mid = None
+                        prev_best_bid = None
+                        prev_best_ask = None
+                except (TypeError, ValueError):
+                    reconnect = False
+            mid_prev = prev_mid
+            top_px_change = False
+            if prev_best_bid is not None and prev_best_ask is not None:
+                top_px_change = best_bid != prev_best_bid or best_ask != prev_best_ask
+            mid_change = False
+            if mid_prev is not None and mid is not None:
+                mid_change = mid != mid_prev
             mid_ret = None
             abs_mid_ret = None
-            if mid is not None and prev_mid not in (None, 0.0):
+            if mid is not None and mid_prev not in (None, 0.0):
                 try:
-                    mid_ret = (float(mid) - float(prev_mid)) / float(prev_mid)
+                    mid_ret = (float(mid) - float(mid_prev)) / float(mid_prev)
                     abs_mid_ret = abs(float(mid_ret))
                 except (TypeError, ValueError, ZeroDivisionError):
                     mid_ret = None
@@ -645,14 +731,10 @@ def run_live(
             crossed_ask = final_ask_px is not None and best_bid is not None and final_ask_px <= best_bid
             crossed = crossed_bid or crossed_ask
 
-            reconnect = False
-            if reconnect_gap_ms is not None and prev_ts is not None:
-                try:
-                    if ts_ms - prev_ts >= int(reconnect_gap_ms):
-                        reconnect = True
-                        prev_mid = None
-                except (TypeError, ValueError):
-                    reconnect = False
+            book_payload = f"{best_bid}:{best_ask}:{bid_sz1}:{ask_sz1}"
+            book_hash8 = hashlib.sha256(book_payload.encode("utf-8")).hexdigest()[:8]
+            book_change = prev_book_hash is not None and book_hash8 != prev_book_hash
+            prev_book_hash = book_hash8
 
             _write_jsonl(
                 market_log,
@@ -662,6 +744,11 @@ def run_live(
                     "best_ask": best_ask,
                     "bid_sz1": bid_sz1,
                     "ask_sz1": ask_sz1,
+                    "book_hash8": book_hash8,
+                    "book_change": book_change,
+                    "top_px_change": top_px_change,
+                    "mid_change": mid_change,
+                    "mid_prev": mid_prev,
                     "mid": mid,
                     "abs_mid_ret": abs_mid_ret,
                     "boost_active": boost_active,
@@ -676,6 +763,10 @@ def run_live(
                 decision_log,
                 {
                     "ts_ms": ts_ms,
+                    "mid": mid,
+                    "mid_prev": mid_prev,
+                    "abs_mid_ret": abs_mid_ret,
+                    "abs_mid_ret_src": "l2Book",
                     "base_size": float(params.base_size),
                     "boost_size_factor": float(params.boost_size_factor),
                     "raw_bid_sz": raw_bid_sz,
@@ -722,6 +813,8 @@ def run_live(
                     active_orders = {"buy": None, "sell": None}
                     last_batch_ts = ts_ms
                 prev_mid = mid
+                prev_best_bid = best_bid
+                prev_best_ask = best_ask
                 prev_ts = ts_ms
                 prev_boost = boost_active
                 time.sleep(max(0.0, poll_interval_ms / 1000.0))
@@ -729,6 +822,8 @@ def run_live(
 
             if batch_gap_ms > 0 and last_batch_ts is not None and ts_ms - last_batch_ts < batch_gap_ms:
                 prev_mid = mid
+                prev_best_bid = best_bid
+                prev_best_ask = best_ask
                 prev_ts = ts_ms
                 prev_boost = boost_active
                 time.sleep(max(0.0, poll_interval_ms / 1000.0))
@@ -840,6 +935,8 @@ def run_live(
                 last_batch_ts = ts_ms
 
             prev_mid = mid
+            prev_best_bid = best_bid
+            prev_best_ask = best_ask
             prev_ts = ts_ms
             prev_boost = boost_active
             time.sleep(max(0.0, poll_interval_ms / 1000.0))

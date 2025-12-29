@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Mapping, Optional
 
-from hlmm.mm.sim import Order
+from .sim import Order
 
 
 @dataclass(frozen=True)

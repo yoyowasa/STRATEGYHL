@@ -12,6 +12,9 @@ pyarrow = "^17.0.0"
 zstandard = "^0.23.0"
 numpy = "^2.1.0"
 matplotlib = "^3.9.0"
+eth-account = "^0.13.7"
+hyperliquid = "^0.4.66"
+hyperliquid-python-sdk = "^0.21.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
