@@ -102,6 +102,7 @@ def _build_strategy_params(extra: Mapping[str, object], max_abs_position_overrid
         boost_only_if_abs_pos_lt=(
             float(extra["boost_only_if_abs_pos_lt"]) if "boost_only_if_abs_pos_lt" in extra else None
         ),
+        quote_only_in_boost=_as_bool(extra.get("quote_only_in_boost", False)),
         pull_when_market_spread_bps_gt=(
             float(extra["pull_when_market_spread_bps_gt"]) if "pull_when_market_spread_bps_gt" in extra else None
         ),

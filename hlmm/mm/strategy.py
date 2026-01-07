@@ -29,6 +29,7 @@ class StrategyParams:
     boost_when_abs_mid_ret_gt: Optional[float] = None
     boost_size_factor: float = 1.0
     boost_only_if_abs_pos_lt: Optional[float] = None
+    quote_only_in_boost: bool = False
     # pull（baseline + pull）
     pull_when_market_spread_bps_gt: Optional[float] = None
     pull_when_market_spread_bps_lt: Optional[float] = None
@@ -224,6 +225,17 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
             "orders": [],
             "halt": True,
             "stop_triggered": True,
+            "pull_triggered": False,
+            "post_pull_unwind_active": False,
+            "halt_triggered": halt_triggered,
+            "boost_triggered": boost_triggered,
+        }
+
+    if params.quote_only_in_boost and not boost_triggered:
+        return {
+            "orders": [],
+            "halt": True,
+            "stop_triggered": False,
             "pull_triggered": False,
             "post_pull_unwind_active": False,
             "halt_triggered": halt_triggered,
