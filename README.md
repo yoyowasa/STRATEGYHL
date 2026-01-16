@@ -29,6 +29,13 @@ print(decide_orders(state, StrategyParams()))
 PY
 ```
 
+## 運用固定（prod-f15-live-v2）
+- 運用YAML: `configs/strategy_prod_f15_live.yaml`（B3.2固定）
+- 判定ルール/WARN: `PROJECT_SPEC.md` の 15.11
+- run_report 生成: `python scripts/run_report.py --run-dir outputs_live_f15/<run_id> --out reports_live_f15/<run_id>/run_report.json`
+- 監視集計: `python scripts/monitor_live.py --reports-root reports_live_f15 --window 10`
+- 出力: 標準出力 + `reports_live_f15/_monitor/summary.json`（`reports*`/`outputs*` は .gitignore 対象）
+
 ## データ収集の前提（最小セット）
 - l2Book（ETH perp）: `time`, `bids/asks[[px,sz]]`。クロックとして使用。
 - trades: `time`, `side`, `px`, `sz`, `trade_id`。フロー/フィルモデルに必須。
