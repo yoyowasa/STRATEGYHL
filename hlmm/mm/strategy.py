@@ -28,6 +28,7 @@ class StrategyParams:
     # boost（risk-on）
     boost_when_abs_mid_ret_gt: Optional[float] = None
     boost_size_factor: float = 1.0
+    boost_spread_add_bps: float = 0.0
     boost_only_if_abs_pos_lt: Optional[float] = None
     quote_only_in_boost: bool = False
     # pull（baseline + pull）
@@ -499,6 +500,14 @@ def decide_orders(state: Mapping[str, object], params: StrategyParams) -> Dict[s
             bid_spread_bps = max(0.0, float(bid_spread_bps) + spread_add)
             bid_size = max(0.0, float(bid_size) * size_factor)
             ask_size = max(0.0, float(ask_size) * other_size_factor)
+
+    if boost_triggered:
+        try:
+            boost_spread_add = float(params.boost_spread_add_bps)
+        except (TypeError, ValueError):
+            boost_spread_add = 0.0
+        bid_spread_bps = max(0.0, float(bid_spread_bps) + boost_spread_add)
+        ask_spread_bps = max(0.0, float(ask_spread_bps) + boost_spread_add)
 
     skew_mult = 1.0
     if pull_triggered:

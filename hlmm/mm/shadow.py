@@ -146,6 +146,8 @@ def run_shadow(
         boost_active = bool(res.get("boost_triggered"))
         stop_triggered = bool(res.get("stop_triggered"))
         halt_triggered = bool(res.get("halt_triggered"))
+        effective_bid_spread_bps = _safe_float(res.get("strategy_bid_spread_bps"))
+        effective_ask_spread_bps = _safe_float(res.get("strategy_ask_spread_bps"))
 
         target: Dict[str, dict] = {
             "buy": {"price": None, "size": 0.0},
@@ -266,19 +268,24 @@ def run_shadow(
             if prev_boost is not None and prev_boost != boost_active:
                 reason = "boost_toggle"
             for action, side, px, sz in actions:
+                record = {
+                    "ts_ms": ts_ms,
+                    "action": action,
+                    "side": side,
+                    "px": px,
+                    "sz": sz,
+                    "post_only": True,
+                    "batch_id": batch_id,
+                    "reason": reason,
+                    "crossed": crossed,
+                }
+                if action in {"new", "replace"}:
+                    record["effective_spread_bps"] = (
+                        effective_bid_spread_bps if side == "buy" else effective_ask_spread_bps
+                    )
                 _write_jsonl(
                     orders_log,
-                    {
-                        "ts_ms": ts_ms,
-                        "action": action,
-                        "side": side,
-                        "px": px,
-                        "sz": sz,
-                        "post_only": True,
-                        "batch_id": batch_id,
-                        "reason": reason,
-                        "crossed": crossed,
-                    },
+                    record,
                 )
             last_batch_ts = ts_ms
 

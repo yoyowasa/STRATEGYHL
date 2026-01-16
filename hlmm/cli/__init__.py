@@ -99,6 +99,7 @@ def _build_strategy_params(extra: Mapping[str, object], max_abs_position_overrid
             float(extra["boost_when_abs_mid_ret_gt"]) if "boost_when_abs_mid_ret_gt" in extra else None
         ),
         boost_size_factor=float(extra.get("boost_size_factor", 1.0)),
+        boost_spread_add_bps=float(extra.get("boost_spread_add_bps", 0.0)),
         boost_only_if_abs_pos_lt=(
             float(extra["boost_only_if_abs_pos_lt"]) if "boost_only_if_abs_pos_lt" in extra else None
         ),

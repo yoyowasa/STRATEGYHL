@@ -713,6 +713,8 @@ def run_live(
     poll_interval_ms: int = 1000,
     book_depth: int = 20,
     duration_sec: Optional[int] = None,
+    gateb_fills_min: Optional[int] = None,
+    gateb_notional_min: Optional[float] = None,
     order_batch_sec: Optional[float] = None,
     size_decimals: Optional[int] = None,
     price_decimals: Optional[int] = None,
@@ -738,6 +740,21 @@ def run_live(
         price_decimals = int(extra["price_decimals"])
     if reconnect_gap_ms is None and "reconnect_gap_ms" in extra:
         reconnect_gap_ms = int(extra["reconnect_gap_ms"])
+
+    if gateb_fills_min is None and "gateb_fills_min" in extra:
+        try:
+            gateb_fills_min = int(extra["gateb_fills_min"])
+        except (TypeError, ValueError):
+            gateb_fills_min = None
+    if gateb_fills_min is not None and gateb_fills_min <= 0:
+        gateb_fills_min = None
+    if gateb_notional_min is None and "gateb_notional_min" in extra:
+        try:
+            gateb_notional_min = float(extra["gateb_notional_min"])
+        except (TypeError, ValueError):
+            gateb_notional_min = None
+    if gateb_notional_min is not None and gateb_notional_min <= 0:
+        gateb_notional_min = None
     disconnect_guard = _as_bool(extra.get("disconnect_guard", False))
     order_status_check = _as_bool(extra.get("order_status_check", True))
     try:
@@ -849,6 +866,9 @@ def run_live(
         "base_url": base_url,
         "coin": coin,
         "started_at": datetime.now(timezone.utc).isoformat(),
+        "duration_sec": duration_sec,
+        "gateb_fills_min": gateb_fills_min,
+        "gateb_notional_min": gateb_notional_min,
         "order_batch_sec": order_batch_sec,
         "size_decimals": size_decimals,
         "price_decimals": price_decimals,
@@ -885,6 +905,10 @@ def run_live(
     fills_cursor_ms = _now_ms() - (fills_lookback_sec * 1000)
     if fills_cursor_ms < 0:
         fills_cursor_ms = 0
+
+    run_start_ts_ms: Optional[int] = None
+    gateb_fills_count = 0
+    gateb_notional_sum = 0.0
 
     def log_event(event: str, detail: dict) -> None:
         record = {"ts_ms": _now_ms(), "event": event}
@@ -1131,7 +1155,7 @@ def run_live(
         )
 
     def sync_fills(reason: str, now_ms: int) -> None:
-        nonlocal last_fills_sync_ts, fills_cursor_ms
+        nonlocal last_fills_sync_ts, fills_cursor_ms, gateb_fills_count, gateb_notional_sum
         if fills_sync_ms <= 0:
             return
         if now_ms - last_fills_sync_ts < fills_sync_ms:
@@ -1146,6 +1170,9 @@ def run_live(
         start_ms = max(0, fills_cursor_ms)
         req_start_ms = int(start_ms)
         new_count = 0
+        skipped_before_start = 0
+        gateb_new_fills = 0
+        gateb_new_notional = 0.0
         resp_len = 0
         pages = 0
         missing_tid = 0
@@ -1201,8 +1228,19 @@ def run_live(
                 if len(seen_fill_queue) > max_seen_fills:
                     old = seen_fill_queue.popleft()
                     seen_fill_ids.discard(old)
+                if run_start_ts_ms is not None and time_ms is not None and time_ms < run_start_ts_ms:
+                    skipped_before_start += 1
+                    continue
                 _write_jsonl(fills_log, fill)
                 new_count += 1
+                px = _safe_float(fill.get("px"))
+                sz = _safe_float(fill.get("sz"))
+                if px is not None and sz is not None and px > 0 and sz > 0:
+                    gateb_fills_count += 1
+                    notional = px * sz
+                    gateb_notional_sum += notional
+                    gateb_new_fills += 1
+                    gateb_new_notional += notional
             if max_time is None:
                 break
             start_ms = int(max_time) + 1
@@ -1218,10 +1256,15 @@ def run_live(
                 "fills_req_start_time": req_start_ms,
                 "fills_resp_len": resp_len,
                 "fills_new_len": new_count,
+                "fills_skipped_before_start": skipped_before_start,
                 "fills_missing_tid": missing_tid,
                 "fills_cursor_ms_after": int(fills_cursor_ms),
                 "fills_pages": pages if resp_len else 0,
                 "fills_user": sender.open_orders_user,
+                "gateb_fills_count": gateb_fills_count,
+                "gateb_notional_sum": gateb_notional_sum,
+                "gateb_new_fills": gateb_new_fills,
+                "gateb_new_notional": gateb_new_notional,
             },
         )
         try:
@@ -1405,6 +1448,22 @@ def run_live(
 
     try:
         while True:
+            if (
+                (gateb_fills_min is not None or gateb_notional_min is not None)
+                and (gateb_fills_min is None or gateb_fills_count >= gateb_fills_min)
+                and (gateb_notional_min is None or gateb_notional_sum >= gateb_notional_min)
+            ):
+                log_event(
+                    "shutdown",
+                    {
+                        "reason": "gateb_reached",
+                        "gateb_fills_count": gateb_fills_count,
+                        "gateb_notional_sum": gateb_notional_sum,
+                        "gateb_fills_min": gateb_fills_min,
+                        "gateb_notional_min": gateb_notional_min,
+                    },
+                )
+                break
             if duration_sec is not None and time.monotonic() - start_time >= float(duration_sec):
                 log_event("shutdown", {"reason": "duration_elapsed"})
                 break
@@ -1420,6 +1479,8 @@ def run_live(
                 continue
 
             ts_ms = int(book.get("time") or recv_ts_ms)
+            if run_start_ts_ms is None:
+                run_start_ts_ms = ts_ms
             bids, asks = _extract_book_levels(book, depth=book_depth)
             best_bid, bid_sz1 = _best_level(bids)
             best_ask, ask_sz1 = _best_level(asks)
@@ -1575,6 +1636,8 @@ def run_live(
             state["strategy_bid_size"] = res.get("strategy_bid_size")
             state["strategy_ask_size"] = res.get("strategy_ask_size")
             state["post_pull_unwind_active"] = bool(res.get("post_pull_unwind_active"))
+            effective_bid_spread_bps = _safe_float(state.get("strategy_bid_spread_bps"))
+            effective_ask_spread_bps = _safe_float(state.get("strategy_ask_spread_bps"))
 
             if spread_filter_active:
                 res["orders"] = []
@@ -1766,6 +1829,22 @@ def run_live(
                 sync_open_orders("forced" if needs_open_orders_sync else "periodic", ts_ms)
             if fills_sync_ms > 0:
                 sync_fills("periodic", ts_ms)
+            if (
+                (gateb_fills_min is not None or gateb_notional_min is not None)
+                and (gateb_fills_min is None or gateb_fills_count >= gateb_fills_min)
+                and (gateb_notional_min is None or gateb_notional_sum >= gateb_notional_min)
+            ):
+                log_event(
+                    "shutdown",
+                    {
+                        "reason": "gateb_reached",
+                        "gateb_fills_count": gateb_fills_count,
+                        "gateb_notional_sum": gateb_notional_sum,
+                        "gateb_fills_min": gateb_fills_min,
+                        "gateb_notional_min": gateb_notional_min,
+                    },
+                )
+                break
             if skip_quote_cycle and not (stop_triggered or halt_triggered):
                 log_event(
                     "quote_skip",
@@ -1921,6 +2000,9 @@ def run_live(
                         new_orders = []
                         for _, side, px, sz, _active, replenish in batch_actions:
                             client_oid = f"0x{os.urandom(16).hex()}"
+                            effective_spread_bps = (
+                                effective_bid_spread_bps if side == "buy" else effective_ask_spread_bps
+                            )
                             new_orders.append(
                                 {
                                     "side": side,
@@ -1928,6 +2010,7 @@ def run_live(
                                     "size": sz,
                                     "client_oid": client_oid,
                                     "replenish": replenish,
+                                    "effective_spread_bps": effective_spread_bps,
                                 }
                             )
                         send_statuses = sender.send_new_batch(new_orders)
@@ -1943,6 +2026,7 @@ def run_live(
                                     "sz": order["size"],
                                     "post_only": True,
                                     "client_oid": order["client_oid"],
+                                    "effective_spread_bps": order.get("effective_spread_bps"),
                                     "batch_id": batch_id,
                                     "reason": reason,
                                     "crossed": crossed,
@@ -2035,6 +2119,9 @@ def run_live(
                         for _, side, px, sz, active, replenish in batch_actions:
                             client_oid = active.get("client_oid") if active else None
                             exchange_id = active.get("exchange_id") if active else None
+                            effective_spread_bps = (
+                                effective_bid_spread_bps if side == "buy" else effective_ask_spread_bps
+                            )
                             modify_orders.append(
                                 {
                                     "side": side,
@@ -2043,6 +2130,7 @@ def run_live(
                                     "client_oid": client_oid,
                                     "exchange_id": exchange_id,
                                     "replenish": replenish,
+                                    "effective_spread_bps": effective_spread_bps,
                                 }
                             )
                         send_statuses = sender.send_modify_batch(modify_orders)
@@ -2058,6 +2146,7 @@ def run_live(
                                     "sz": order["size"],
                                     "post_only": True,
                                     "client_oid": order["client_oid"],
+                                    "effective_spread_bps": order.get("effective_spread_bps"),
                                     "batch_id": batch_id,
                                     "reason": reason,
                                     "crossed": crossed,

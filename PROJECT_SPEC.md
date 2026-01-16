@@ -207,6 +207,7 @@ python scripts/mm_live.py --config configs\strategy_prod_f15.yaml --mode live --
 - `action`（new/replace/cancel/cancel_all）
 - `side`（bid/ask）
 - `px`, `sz`, `post_only`
+- （new/replaceのみ）`effective_spread_bps`（その注文で実際に使ったスプレッド設定）
 - `client_oid`
 - （可能なら）`exchange_order_id (oid)`
 - `status`（sent/error/ack 等）
@@ -342,9 +343,11 @@ strategy:
 
 ## 12. 運用固定（Git/タグ）
 ### 12.1 固定方針（固定）
-- 運用YAMLは **1本に統一**：`strategy_prod_f15.yaml`
+- 運用YAMLは **1本に統一**：`strategy_prod_f15_live.yaml`（B3.2 確定合格）
+- `strategy_prod_f15.yaml` は履歴/Stage-0基準として保持
 - 研究成果（f15）と関連コード・テスト・スクリプトは **同一コミット**にまとめ、タグで固定
 - 既存：`prod-f15-v1`（commit: 32e4fad）
+- 次の固定タグ（B3.2運用固定）：`prod-f15-live-v2`
 
 ### 12.2 注意（LF/CRLF）
 - Git warning（LF→CRLF）は別問題（整形タスク）
@@ -534,6 +537,24 @@ Bフェーズ最小として、まずはこの4つだけで機械判定する。
   - 上がってないなら、spread を広げても fill時の edge が増えない構造 → B1系列は打ち止め候補
 - `net_bps.median` が 0 を跨いだか？
   - 跨いだら、その設定で母数を増やして再現性チェックへ
+
+### 15.11 B3.2 確定合格後の判定ルール（運用固定）
+B3.2 を運用固定する際の判定ルールは以下で固定する。
+
+#### run単体（mm_live）
+- HARD FAIL：`taker_guard_trip == true` または `taker_notional_share > 0.1%`
+- HARD FAIL：`net_bps.p10 < -5`
+- INCONCLUSIVE：GateB 未達（`fills_count < 10` または `notional_sum < 300`）、または `fills_joined_count == 0`
+- EVAL（GateB達成runのみ）：`net_bps.median > 0` を PASS、それ以外は FAIL
+
+#### candidate（run集合）
+- GateB_pass を 10 本集めて判定
+- `net_med` は run_report の `net_bps.median`
+- `median(net_med) > 0` かつ `win_rate(net_med>0) >= 0.55` で合格
+
+#### WARN（markout30）
+- `markout30_med < -5` は WARN（hard gate にしない）
+- 10本中2本以上、または連続2回で発生したら要対応（次ノブ検討）
 
 ---
 

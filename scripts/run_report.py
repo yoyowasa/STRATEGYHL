@@ -36,6 +36,26 @@ def _as_float(value: Any) -> Optional[float]:
         return None
 
 
+def _normalize_cloid(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        return s or None
+    if isinstance(value, dict):
+        for key in ("cloid", "client_oid", "clientOid", "value", "hex", "id"):
+            if key in value:
+                s = _normalize_cloid(value.get(key))
+                if s:
+                    return s
+        return None
+    try:
+        s = str(value).strip()
+    except Exception:
+        return None
+    return s or None
+
+
 def _price_tick_from_value(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
@@ -95,6 +115,26 @@ def build_report(run_dir: Path, horizons_s: List[int]) -> Dict[str, Any]:
     decision = _read_jsonl(run_dir / "decision.jsonl")
     orders = _read_jsonl(run_dir / "orders.jsonl")
 
+    orders_by_cloid: Dict[str, List[Tuple[int, Optional[float]]]] = {}
+    for row in orders:
+        action = row.get("action")
+        if action not in {"new", "replace"}:
+            continue
+        cloid = _normalize_cloid(
+            row.get("client_oid") or row.get("cloid") or row.get("clientOid") or row.get("clientOid")
+        )
+        ts = row.get("ts_ms")
+        if cloid is None or not isinstance(ts, (int, float)):
+            continue
+        spread = _as_float(row.get("effective_spread_bps"))
+        orders_by_cloid.setdefault(cloid, []).append((int(ts), spread))
+    order_ts_by_cloid: Dict[str, List[int]] = {}
+    order_spread_by_cloid: Dict[str, List[Optional[float]]] = {}
+    for cloid, entries in orders_by_cloid.items():
+        entries.sort(key=lambda item: item[0])
+        order_ts_by_cloid[cloid] = [t for t, _ in entries]
+        order_spread_by_cloid[cloid] = [s for _, s in entries]
+
     market_ts: List[int] = []
     market_mid: List[Optional[float]] = []
     market_bid: List[Optional[float]] = []
@@ -134,6 +174,19 @@ def build_report(run_dir: Path, horizons_s: List[int]) -> Dict[str, Any]:
     market_ts_min = min(market_ts) if market_ts else None
     market_ts_max = max(market_ts) if market_ts else None
 
+    decision_ticks = 0
+    boost_active_count = 0
+    for row in decision:
+        ts = row.get("ts_ms")
+        if not isinstance(ts, (int, float)):
+            continue
+        decision_ticks += 1
+        if row.get("boost_active"):
+            boost_active_count += 1
+    boost_active_rate = (
+        boost_active_count / decision_ticks if decision_ticks else None
+    )
+
     decision_by_ts: Dict[int, Dict[str, Any]] = {}
     for row in decision:
         ts = row.get("ts_ms")
@@ -157,6 +210,12 @@ def build_report(run_dir: Path, horizons_s: List[int]) -> Dict[str, Any]:
     mid_source_counts: Dict[str, int] = {}
     edge_sign_bad_count = 0
     edge_sign_zero_count = 0
+    fills_cloid_missing_count = 0
+    fills_cloid_unmatched_count = 0
+    fills_cloid_matched_count = 0
+    fills_cloid_join_dt_ms: List[float] = []
+    fill_effective_spread_bps_values: List[float] = []
+    net_bps_by_spread_bucket: Dict[str, List[float]] = {}
 
     for fill in fills:
         px = _as_float(fill.get("px"))
@@ -217,7 +276,34 @@ def build_report(run_dir: Path, horizons_s: List[int]) -> Dict[str, Any]:
         fee_bps = fee / notional * 1e4 if notional > 0 else 0.0
         edge_bps_values.append(edge_bps)
         fee_bps_values.append(fee_bps)
-        net_bps_values.append(edge_bps - fee_bps)
+        net_bps = edge_bps - fee_bps
+        net_bps_values.append(net_bps)
+
+        fill_cloid = _normalize_cloid(
+            fill.get("cloid") or fill.get("client_oid") or fill.get("clientOid") or fill.get("clientOid")
+        )
+        if fill_cloid is None:
+            fills_cloid_missing_count += 1
+        else:
+            ts_list = order_ts_by_cloid.get(fill_cloid)
+            if not ts_list:
+                fills_cloid_unmatched_count += 1
+            else:
+                oi = bisect_right(ts_list, ts_ms_i) - 1
+                if oi < 0:
+                    fills_cloid_unmatched_count += 1
+                else:
+                    fills_cloid_matched_count += 1
+                    order_ts = ts_list[oi]
+                    fills_cloid_join_dt_ms.append(ts_ms_i - order_ts)
+                    spread = order_spread_by_cloid.get(fill_cloid, [None])[oi]
+                    if spread is not None:
+                        fill_effective_spread_bps_values.append(float(spread))
+                        try:
+                            bucket = format(Decimal(str(spread)).quantize(Decimal("0.01")), "f")
+                        except Exception:
+                            bucket = f"{float(spread):.2f}"
+                        net_bps_by_spread_bucket.setdefault(bucket, []).append(net_bps)
 
         for h in horizons_s:
             mid_h = _find_mid_after(market_ts, market_mid, ts_ms_i + h * 1000)
@@ -292,9 +378,22 @@ def build_report(run_dir: Path, horizons_s: List[int]) -> Dict[str, Any]:
         k: (v / duration_min) if duration_min else None for k, v in action_counts.items()
     }
 
+    fills_cloid_join_dt_sorted = sorted(fills_cloid_join_dt_ms)
+    fills_cloid_join_dt_ms_p50 = _percentile(fills_cloid_join_dt_sorted, 0.5)
+    fills_cloid_join_dt_ms_p95 = _percentile(fills_cloid_join_dt_sorted, 0.95)
+    net_bps_by_effective_spread_bps = {
+        k: _summary_stats(v) for k, v in sorted(net_bps_by_spread_bucket.items(), key=lambda item: item[0])
+    }
+
     report = {
         "run_dir": str(run_dir),
-        "fills_count": len(fills),
+        "decision_ticks": decision_ticks,
+        "boost_active_count": boost_active_count,
+        "boost_active_rate": boost_active_rate,
+        "boost_trigger_count": boost_active_count,
+        "boost_trigger_rate": boost_active_rate,
+        "fills_total_count": len(fills),
+        "fills_count": maker_count + taker_count,
         "fills_joined_count": fills_joined_count,
         "fills_join_miss_count": fills_join_miss_count,
         "fills_out_of_run_count": fills_out_of_run_count,
@@ -320,6 +419,13 @@ def build_report(run_dir: Path, horizons_s: List[int]) -> Dict[str, Any]:
         "edge_bps": _summary_stats(edge_bps_values),
         "fee_bps_per_fill": _summary_stats(fee_bps_values),
         "net_bps": _summary_stats(net_bps_values),
+        "fills_cloid_missing_count": fills_cloid_missing_count,
+        "fills_cloid_unmatched_count": fills_cloid_unmatched_count,
+        "fills_cloid_matched_count": fills_cloid_matched_count,
+        "fills_cloid_join_dt_ms_p50": fills_cloid_join_dt_ms_p50,
+        "fills_cloid_join_dt_ms_p95": fills_cloid_join_dt_ms_p95,
+        "fill_effective_spread_bps": _summary_stats(fill_effective_spread_bps_values),
+        "net_bps_by_effective_spread_bps": net_bps_by_effective_spread_bps,
         "markout_bps": {str(h): _summary_stats(vals) for h, vals in markout_by_h.items()},
         "at_touch_rate": {
             "bid": (touch_bid / touch_bid_total) if touch_bid_total else None,

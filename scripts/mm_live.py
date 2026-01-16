@@ -44,6 +44,18 @@ def main() -> int:
     parser.add_argument("--poll-interval-ms", type=int, default=1000, help="Polling interval in ms.")
     parser.add_argument("--book-depth", type=int, default=20, help="Order book depth.")
     parser.add_argument("--duration-sec", type=int, default=None, help="Optional duration limit.")
+    parser.add_argument(
+        "--gateb-fills-min",
+        type=int,
+        default=None,
+        help="Stop when fills_count >= N (GateB). If both gateb thresholds are set, requires both.",
+    )
+    parser.add_argument(
+        "--gateb-notional-min",
+        type=float,
+        default=None,
+        help="Stop when notional_sum >= X (GateB). If both gateb thresholds are set, requires both.",
+    )
     parser.add_argument("--order-batch-sec", type=float, default=None, help="Override order batch seconds.")
     parser.add_argument("--size-decimals", type=int, default=None, help="Override size decimals.")
     parser.add_argument("--price-decimals", type=int, default=None, help="Override price decimals.")
@@ -61,6 +73,8 @@ def main() -> int:
         poll_interval_ms=int(args.poll_interval_ms),
         book_depth=int(args.book_depth),
         duration_sec=args.duration_sec,
+        gateb_fills_min=args.gateb_fills_min,
+        gateb_notional_min=args.gateb_notional_min,
         order_batch_sec=args.order_batch_sec,
         size_decimals=args.size_decimals,
         price_decimals=args.price_decimals,
