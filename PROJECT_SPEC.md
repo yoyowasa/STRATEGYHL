@@ -556,6 +556,125 @@ B3.2 を運用固定する際の判定ルールは以下で固定する。
 - `markout30_med < -5` は WARN（hard gate にしない）
 - 10本中2本以上、または連続2回で発生したら要対応（次ノブ検討）
 
+### 15.12 運用固定後の次の一手（監視の実データ確認）
+運用固定（YAML / 判定ルール / 監視）は `prod-f15-live-v2` タグでロック済み。  
+次は「monitor が実データを拾って回る」ことの動作確認 → OKなら運用ループへ。
+
+#### ステップ0：run_id を決める
+- 最新を使うなら `outputs_live_f15` 直下の最新ディレクトリを選ぶ
+- 指定するなら `live_f15_stage0_YYYYMMDD_...` の run_id を使う
+- 以降の例は RUN_ID を使う（cmd：`set RUN_ID=live_f15_stage0_YYYYMMDD_...` / PowerShell：`$env:RUN_ID="live_f15_stage0_YYYYMMDD_..."`）
+
+#### ステップ1：run_report の有無確認（run_id 単位）
+Windows（cmd）
+```cmd
+dir reports_live_f15\%RUN_ID%\run_report.json
+```
+
+Windows（PowerShell）
+```powershell
+Get-ChildItem "reports_live_f15\$env:RUN_ID\run_report.json" | Select-Object -Expand FullName
+```
+
+- 1件でも出れば → ステップ3へ
+- 0件なら → ステップ2へ
+
+#### ステップ2：run_report を生成（まだ無ければ）
+既存の run dir（例：`outputs_live_f15\live_f15_...`）がある前提で 1 本だけ作る。
+```powershell
+python scripts/run_report.py --run-dir "outputs_live_f15\$env:RUN_ID" --out "reports_live_f15\$env:RUN_ID\run_report.json"
+```
+
+#### ステップ3：monitor を再実行（実データ環境）
+```powershell
+python scripts/monitor_live.py --reports-root reports_live_f15 --window 10
+```
+
+確認ポイント（出力 / summary.json の両方）
+- `last_10_gateB_pass` の `median(net_med)` と `win_rate(net_med>0)`
+- `taker_guard_trip_count`
+- `WARN_count(markout30_med<-5)`（WARN 扱いで固定）
+
+#### ステップ4：運用ループに入る（B3.2固定の live）
+- live 実行（1200秒）
+- run_report を生成（reports に保存）
+- monitor を実行（直近10本窓で判定）
+
+#### 短時間で見る観点（実戦向け）
+- `reports_live_f15/<run_id>/...` と `outputs_live_f15/<run_id>/...` が一致している（混線防止）
+- 必須ログが揃っている（`decision.jsonl` / `orders.jsonl` / `events.jsonl` / `config_resolved.yaml` / `manifest.json`）
+- monitor の結果が FAIL か INCONCLUSIVE かを取り違えていない（価格が動かなすぎは inconclusive）
+- `run_report.json` の更新時刻と run_id の整合（古い run を最新と誤認しない）
+
+#### 任意：1コマンド化
+`scripts\make_report_and_monitor.bat [RUN_ID] [WINDOW]` を用意して `run_report → monitor` を 1 回で実行する。  
+RUN_ID 省略時は `outputs_live_f15` の最新 run を使う。`FORCE=1` で再生成。
+
+#### スモークテスト1：既存 run で「生成→再利用」
+前提
+- 既存の RUN_ID を 1つ決める（`outputs_live_f15\%RUN_ID%` が存在するもの）
+- `make_report_and_monitor.bat` は RUN_ID を引数で渡す（自動最新選択は別テスト）
+
+手順（1回目：生成されること）
+```cmd
+set RUN_ID=live_f15_stage0_YYYYMMDD_...
+del reports_live_f15\%RUN_ID%\run_report.json
+make_report_and_monitor.bat %RUN_ID%
+dir reports_live_f15\%RUN_ID%\run_report.json
+```
+
+手順（2回目：再利用されること）
+```cmd
+make_report_and_monitor.bat %RUN_ID%
+certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
+```
+
+合格条件（最小）
+- 1回目：run_report.json が作られ、monitor が通る
+- 2回目：run_report.json は作り直さず、monitor が通る
+- どちらも：ログに run_id / outputs / reports が明示され、混線が起きない
+- `reports_live_f15\_monitor\summary.json` が更新される
+
+#### スモークテスト2：RUN_ID 省略時の「最新 run 自動選択」
+最新の定義は `outputs_live_f15` の更新時刻順（`dir /o-d`）に固定。
+
+手順
+```cmd
+set RUN_ID=live_f15_stage0_YYYYMMDD_...
+type nul > outputs_live_f15\%RUN_ID%\_touch_latest.txt
+make_report_and_monitor.bat
+```
+
+合格条件
+- 選ばれた run_id が想定どおりで、以降の処理もその run_id で一貫している
+
+#### スモークテスト3：FORCE=1 で「再生成」
+仕様
+- `FORCE=1` のときだけ run_report.json を必ず再生成
+- `FORCE!=1` のときは run_report.json が存在し、かつサイズ>0 なら再利用
+- 生成は `run_report.json.tmp` → 正常時に `run_report.json` へ置換
+
+手順
+```cmd
+set RUN_ID=live_f15_stage0_YYYYMMDD_...
+certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
+set FORCE=1
+make_report_and_monitor.bat %RUN_ID%
+certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
+set FORCE=
+```
+
+合格条件
+- FORCE 実行で再生成が走る（ログに `[INFO] FORCE=1` と生成開始が出る）
+- ハッシュが変わるか、変わらない場合でも「生成フェーズが実行された」ログで確認できる
+
+#### まとめ（最短の2ステップ）
+1) `run_report.json` の存在確認  
+2) 存在する環境で `monitor_live.py --reports-root reports_live_f15 --window 10`
+
+この2ステップで「監視が実データを拾って回る」状態が確認できたら、  
+**B3.2運用ループ（run → report → monitor）** に入るだけ。
+
 ---
 
 ## 付録：研究で確定した f15 の固定値（コピペ用）

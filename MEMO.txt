@@ -1,5 +1,12 @@
 cd E:\STRATEGYHL
+# ステージ：作業ツリーの全変更（追加・更新・削除）を一括
+git add -A
 
+# コミット
+git commit -m "chore: bulk update after lint & format"
+
+# プッシュ
+git push
 # =========================
 # 実行（ETH-USDC PERP）
 # =========================
