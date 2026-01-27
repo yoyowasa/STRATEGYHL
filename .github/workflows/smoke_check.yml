@@ -78,11 +78,13 @@ jobs:
             if (latestSmokeDir) {
               const dirPath = path.join(logsRoot, latestSmokeDir);
               const files = safeList(dirPath).filter((d) => d.isFile()).map((d) => d.name).sort();
-              for (const file of files) {
-                const fullPath = path.join(dirPath, file);
-                const lines = interestingLines(readLines(fullPath)).slice(-20);
-                summaryParts.push(`\n## ${path.posix.join(latestSmokeDir, file)}`);
-                summaryParts.push(lines.length ? lines.join('\n') : '(no interesting lines)');
+              const e2eFile = files.find((f) => f.startsWith('e2e_')) || files[0];
+              if (e2eFile) {
+                const fullPath = path.join(dirPath, e2eFile);
+                const lines = readLines(fullPath);
+                const tail = lines.slice(-80);
+                summaryParts.push(`\n## tail ${path.posix.join(latestSmokeDir, e2eFile)}`);
+                summaryParts.push(tail.length ? tail.join('\n') : '(empty log)');
               }
             }
 
