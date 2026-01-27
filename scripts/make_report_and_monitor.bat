@@ -11,6 +11,7 @@ set "SUMMARY_PATH=%REPORTS_DIR%\_monitor\summary.json"
 
 pushd "%SCRIPT_DIR%.." || (
   echo [ERR] failed to change to repo root.
+  echo ::error::failed to change to repo root
   set "EXIT_CODE=1"
   goto :done
 )
@@ -21,8 +22,31 @@ if /I "%~1"=="--help" goto :usage
 
 if not "%~2"=="" set "WINDOW=%~2"
 
+set "PY_CMD=python"
+set "PY_OK=0"
+python -V >nul 2>&1 && set "PY_OK=1"
+if "%PY_OK%"=="0" (
+  py -3.11 -V >nul 2>&1 && (
+    set "PY_CMD=py -3.11"
+    set "PY_OK=1"
+  )
+)
+if "%PY_OK%"=="0" (
+  py -V >nul 2>&1 && (
+    set "PY_CMD=py"
+    set "PY_OK=1"
+  )
+)
+if "%PY_OK%"=="0" (
+  echo [ERR] python not found on PATH.
+  echo ::error::python command not found on PATH
+  set "EXIT_CODE=1"
+  goto :done
+)
+
 if not exist "%OUTPUTS_DIR%" (
   echo [ERR] outputs dir not found: "%OUTPUTS_DIR%"
+  echo ::error::outputs dir not found: %OUTPUTS_DIR%
   set "EXIT_CODE=1"
   goto :done
 )
@@ -35,6 +59,7 @@ if "%~1"=="" (
     )
   )
   echo [ERR] no completed runs ^(manifest.json^) found under "%OUTPUTS_DIR%".
+  echo ::error::no completed runs with manifest.json under %OUTPUTS_DIR%
   set "EXIT_CODE=1"
   goto :done
 ) else (
@@ -49,6 +74,7 @@ set "RUN_REPORT_TMP=%RUN_REPORT%.tmp"
 
 if not exist "%OUT_RUN%" (
   echo [ERR] outputs run dir not found: "%OUT_RUN%"
+  echo ::error::outputs run dir not found: %OUT_RUN%
   set "EXIT_CODE=1"
   goto :done
 )
@@ -57,6 +83,7 @@ if not exist "%REP_RUN%" (
   mkdir "%REP_RUN%"
   if errorlevel 1 (
     echo [ERR] failed to create reports dir: "%REP_RUN%"
+    echo ::error::failed to create reports dir: %REP_RUN%
     set "EXIT_CODE=1"
     goto :done
   )
@@ -68,6 +95,7 @@ if /I "%FORCE%"=="1" set "FORCE_REGEN=1"
 echo [INFO] run_id  : %RUN_ID%
 echo [INFO] outputs : %OUT_RUN%
 echo [INFO] reports : %REP_RUN%
+echo [INFO] python  : %PY_CMD%
 
 set "NEED_REPORT=0"
 set "RUN_REPORT_SIZE="
@@ -86,21 +114,24 @@ if "%FORCE_REGEN%"=="1" echo [INFO] FORCE=1 - regenerate run_report.json
 if "%NEED_REPORT%"=="1" (
   echo [INFO] generating run_report.json...
   if exist "%RUN_REPORT_TMP%" del /f /q "%RUN_REPORT_TMP%"
-  python scripts\run_report.py --run-dir "%OUT_RUN%" --out "%RUN_REPORT_TMP%"
+  call %PY_CMD% scripts\run_report.py --run-dir "%OUT_RUN%" --out "%RUN_REPORT_TMP%"
   if errorlevel 1 (
     echo [ERR] run_report failed.
+    echo ::error::run_report failed for %RUN_ID%
     if exist "%RUN_REPORT_TMP%" del /f /q "%RUN_REPORT_TMP%"
     set "EXIT_CODE=1"
     goto :done
   )
   if not exist "%RUN_REPORT_TMP%" (
     echo [ERR] run_report output missing: "%RUN_REPORT_TMP%"
+    echo ::error::run_report output missing: %RUN_REPORT_TMP%
     set "EXIT_CODE=1"
     goto :done
   )
   for %%I in ("%RUN_REPORT_TMP%") do set "RUN_REPORT_TMP_SIZE=%%~zI"
   if "%RUN_REPORT_TMP_SIZE%"=="0" (
     echo [ERR] run_report output is empty: "%RUN_REPORT_TMP%"
+    echo ::error::run_report output is empty: %RUN_REPORT_TMP%
     del /f /q "%RUN_REPORT_TMP%"
     set "EXIT_CODE=1"
     goto :done
@@ -108,6 +139,7 @@ if "%NEED_REPORT%"=="1" (
   move /y "%RUN_REPORT_TMP%" "%RUN_REPORT%" >nul
   if errorlevel 1 (
     echo [ERR] failed to finalize run_report.json.
+    echo ::error::failed to finalize run_report.json for %RUN_ID%
     del /f /q "%RUN_REPORT_TMP%"
     set "EXIT_CODE=1"
     goto :done
@@ -117,9 +149,10 @@ if "%NEED_REPORT%"=="1" (
 )
 
 echo [INFO] running monitor...
-python scripts\monitor_live.py --reports-root "%REPORTS_DIR%" --window %WINDOW%
+call %PY_CMD% scripts\monitor_live.py --reports-root "%REPORTS_DIR%" --window %WINDOW%
 if errorlevel 1 (
   echo [ERR] monitor failed.
+  echo ::error::monitor_live failed
   set "EXIT_CODE=1"
   goto :done
 )
