@@ -93,28 +93,15 @@ jobs:
               summaryParts.push(lines.length ? lines.join('\n') : '(no interesting lines)');
             }
 
-            const summary = summaryParts.join('\n').slice(0, 60000);
-
-            const { owner, repo } = context.repo;
-            const ref = context.sha;
-            const checks = await github.rest.checks.listForRef({ owner, repo, ref, per_page: 100 });
-            const checkRun = checks.data.check_runs.find((c) => c.name === process.env.GITHUB_JOB);
-
-            if (!checkRun) {
-              core.warning('check run not found for job: ' + process.env.GITHUB_JOB);
-              core.summary.addRaw(summary).write();
-              return;
+            const summary = summaryParts.join('\n');
+            const clipped = summary.slice(0, 4000);
+            const hasFail = /\[FAIL\]|\[ERR\]|EXIT_CODE=1/.test(summary);
+            core.summary.addCodeBlock(clipped, 'text').write();
+            if (hasFail) {
+              core.error(clipped);
+            } else {
+              core.notice(clipped);
             }
-
-            await github.rest.checks.update({
-              owner,
-              repo,
-              check_run_id: checkRun.id,
-              output: {
-                title: 'smoke summary',
-                summary,
-              },
-            });
 
       - name: Run negative smoke (manifest missing)
         shell: cmd
