@@ -1,6 +1,7 @@
 import argparse
 import json
 import statistics
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -50,6 +51,19 @@ def _bool_to_str(value: Optional[bool]) -> str:
     if value is None:
         return "-"
     return "yes" if value else "no"
+
+
+def _safe_text(text: str) -> str:
+    enc = sys.stdout.encoding or "utf-8"
+    try:
+        text.encode(enc)
+        return text
+    except UnicodeEncodeError:
+        return text.encode(enc, errors="replace").decode(enc, errors="replace")
+
+
+def _safe_print(text: str) -> None:
+    print(_safe_text(text))
 
 
 @dataclass
@@ -216,10 +230,10 @@ def _print_summary(
     last_gateb: List[RunRecord],
     latest_runs: List[RunRecord],
 ) -> None:
-    print("monitor_live: run_report 集計")
-    print(f"  root: {summary['reports_root']}")
-    print(f"  runs_total: {summary['runs_total']}")
-    print(f"  gateb_pass_total: {summary['gateb_pass_total']}")
+    _safe_print("monitor_live: run_report 集計")
+    _safe_print(f"  root: {summary['reports_root']}")
+    _safe_print(f"  runs_total: {summary['runs_total']}")
+    _safe_print(f"  gateb_pass_total: {summary['gateb_pass_total']}")
 
     last_info = summary["last_10_gateb_pass"]
     net_med_median = _fmt(last_info.get("net_med_median"))
@@ -230,23 +244,23 @@ def _print_summary(
     warn_need_action = _bool_to_str(last_info.get("warn_markout30_need_action"))
     taker_trip = last_info.get("taker_guard_trip_count")
 
-    print(f"  last_{summary['window']}_gateb_pass: {last_info.get('count')}")
-    print(f"    median(net_med): {net_med_median}")
-    print(f"    win_rate(net_med>0): {win_rate_str}")
-    print(f"    min(net_p10): {net_p10_min}")
-    print(f"    WARN_count(markout30_med<-5): {warn_count}")
-    print(f"    WARN_need_action: {warn_need_action}")
-    print(f"    taker_guard_trip_count: {taker_trip}")
+    _safe_print(f"  last_{summary['window']}_gateb_pass: {last_info.get('count')}")
+    _safe_print(f"    median(net_med): {net_med_median}")
+    _safe_print(f"    win_rate(net_med>0): {win_rate_str}")
+    _safe_print(f"    min(net_p10): {net_p10_min}")
+    _safe_print(f"    WARN_count(markout30_med<-5): {warn_count}")
+    _safe_print(f"    WARN_need_action: {warn_need_action}")
+    _safe_print(f"    taker_guard_trip_count: {taker_trip}")
 
     if last_gateb:
-        print("  last_gateb_run_ids:")
-        print("    " + ", ".join(r.run_id for r in last_gateb))
+        _safe_print("  last_gateb_run_ids:")
+        _safe_print("    " + ", ".join(r.run_id for r in last_gateb))
 
     if latest_runs:
-        print("  latest_runs:")
-        print("    run_id\tstatus\tnet_med\tmarkout30_med\tfills_count\tnotional_sum")
+        _safe_print("  latest_runs:")
+        _safe_print("    run_id\tstatus\tnet_med\tmarkout30_med\tfills_count\tnotional_sum")
         for run in latest_runs:
-            print(
+            _safe_print(
                 "    "
                 + "\t".join(
                     [

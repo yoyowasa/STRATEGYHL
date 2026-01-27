@@ -11,6 +11,7 @@ jobs:
       OUTPUTS_DIR: outputs_ci_f15
       REPORTS_DIR: reports_ci_f15_smoke
       MANIFEST_FAIL_LOG: logs\manifest_fail.log
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
