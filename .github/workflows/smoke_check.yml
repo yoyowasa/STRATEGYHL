@@ -1,0 +1,53 @@
+name: smoke_check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    env:
+      OUTPUTS_DIR: outputs_ci_f15
+      REPORTS_DIR: reports_ci_f15_smoke
+      MANIFEST_FAIL_LOG: logs\manifest_fail.log
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Clean CI directories
+        shell: cmd
+        run: |
+          if exist "%OUTPUTS_DIR%" rmdir /s /q "%OUTPUTS_DIR%"
+          if exist "%REPORTS_DIR%" rmdir /s /q "%REPORTS_DIR%"
+
+      - name: Prepare smoke fixture
+        shell: cmd
+        run: |
+          scripts\setup_smoke_fixture.bat
+
+      - name: Run smoke_check
+        shell: cmd
+        run: |
+          scripts\smoke_check.bat fixture_run_smoke_001
+          echo ERRORLEVEL=%ERRORLEVEL%
+          if not "%ERRORLEVEL%"=="0" exit /b %ERRORLEVEL%
+
+      - name: Run negative smoke (manifest missing)
+        shell: cmd
+        run: |
+          scripts\smoke_manifest_fail.bat fixture_run_smoke_001
+          echo ERRORLEVEL=%ERRORLEVEL%
+          if not "%ERRORLEVEL%"=="0" exit /b %ERRORLEVEL%
+
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: |
+            logs/smoke_*
+            logs/manifest_fail.log

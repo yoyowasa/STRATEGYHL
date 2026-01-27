@@ -13,3 +13,4 @@ reports*/
 data/*.parquet
 data/windows*/
 configs/archive/
+logs/
