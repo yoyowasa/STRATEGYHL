@@ -199,3 +199,602 @@ poetry run hlmm --config configs/strategy_baseline.yaml mm-sim --blocks data/blo
 poetry run python -c "from hlmm.research import generate_report; generate_report('baseline_1', 'outputs/mm_sim_baseline_1/ledger.parquet', 'outputs/mm_sim_baseline_1/sim_trades.parquet', features_path='data/features.parquet')"
 poetry run python -c "from hlmm.research import generate_report; generate_report('baseline_2', 'outputs/mm_sim_baseline_2/ledger.parquet', 'outputs/mm_sim_baseline_2/sim_trades.parquet', features_path='data/features.parquet')"
 poetry run python -c "import json; a=json.load(open('reports/baseline_1/metrics.json')); b=json.load(open('reports/baseline_2/metrics.json')); print(a==b); print(a['pnl'], b['pnl'])"
+
+# =========================
+# 戦略置き場 - MMBOTエッジ探索計画
+# =========================
+
+了解です。いまの整理（RUN_ID 固定／0バイト復旧／tmp安全置換／FORCE再生成／manifest 必須の自動選択／成功失敗問わず RUN SUMMARY を末尾に出す）まで入ると、**「ログ＋ファイルだけで機械判定」**がかなり現実的になります。
+
+※このチャット環境には、あなたが更新した PROJECT_SPEC.md / make_report_and_monitor.bat の実ファイル本文は共有されていないため、こちらで“該当箇所を実物確認して校正”はできません。ですが、次にやるテスト（2本）を 確実に判定できる観点で手順化して返します。
+ディレクトリ運用（outputs_live_f15/<run_id> と manifest.json）の前提はプロジェクト資料とも整合しています。
+
+1) 既存 RUN_ID 指定で実行し、RUN SUMMARY と EXIT_CODE を確認
+事前チェック（manifest がある RUN_ID を選ぶ）
+
+cmd
+
+set RUN_ID=live_f15_stage0_20251230_001927
+dir outputs_live_f15\%RUN_ID%\manifest.json
+
+PowerShell
+
+$env:RUN_ID="live_f15_stage0_20251230_001927"
+Get-Item "outputs_live_f15\$env:RUN_ID\manifest.json"
+
+実行（ログをファイルに残すのが安全）
+
+cmd（おすすめ：ログ保存）
+
+make_report_and_monitor.bat %RUN_ID% > logs\run_%RUN_ID%.log 2>&1
+type logs\run_%RUN_ID%.log | findstr /c:"RUN SUMMARY" /c:"EXIT_CODE"
+echo ERRORLEVEL=%ERRORLEVEL%
+
+PowerShell（おすすめ：ログ保存）
+
+.\make_report_and_monitor.bat $env:RUN_ID *>&1 | Tee-Object -FilePath "logs/run_$env:RUN_ID.log"
+Select-String -Path "logs/run_$env:RUN_ID.log" -Pattern "RUN SUMMARY","EXIT_CODE"
+$LASTEXITCODE
+
+合格条件（機械判定）
+
+ログ末尾に 必ず RUN SUMMARY ブロックがある
+（例：==================== RUN SUMMARY ==================== が出る）
+
+RUN SUMMARY 内の RUN_ID= が 投入した RUN_ID と一致
+
+EXIT_CODE= が出ている
+
+EXIT_CODE とシェル側の終了コードが一致
+
+cmd：ERRORLEVEL と一致
+
+PowerShell：$LASTEXITCODE と一致
+
+追加で見ると安心（任意）
+
+RUN_REPORT= のパスが出ていて、実体が存在する & 0バイトでない
+
+cmd：
+
+dir reports_live_f15\%RUN_ID%\run_report.json
+
+SUMMARY= のパスが出ていて、存在する（あなたが summary 出力済みなら）
+
+2) RUN_ID 省略で実行し、manifest フィルタが効いているか確認
+まず「候補の並び」と「manifest の有無」を見える化
+
+cmd
+
+dir /b /ad /o-d outputs_live_f15
+for /f "delims=" %D in ('dir /b /ad /o-d outputs_live_f15') do @if exist outputs_live_f15\%D\manifest.json (echo OK %D) else (echo NG %D)
+
+PowerShell
+
+Get-ChildItem outputs_live_f15 -Directory | Sort-Object LastWriteTime -Descending | Select-Object -Expand Name
+Get-ChildItem outputs_live_f15 -Directory |
+  Sort-Object LastWriteTime -Descending |
+  ForEach-Object { "{0} {1}" -f (Test-Path "$($_.FullName)\manifest.json" ? "OK" : "NG"), $_.Name }
+
+実行して、選ばれた RUN_ID を RUN SUMMARY で確認
+
+cmd
+
+make_report_and_monitor.bat > logs\auto_latest.log 2>&1
+type logs\auto_latest.log | findstr /c:"RUN_ID=" /c:"RUN SUMMARY"
+echo ERRORLEVEL=%ERRORLEVEL%
+
+PowerShell
+
+.\make_report_and_monitor.bat *>&1 | Tee-Object -FilePath "logs/auto_latest.log"
+Select-String -Path "logs/auto_latest.log" -Pattern "RUN SUMMARY","RUN_ID="
+$LASTEXITCODE
+
+合格条件（manifest フィルタ）
+
+RUN SUMMARY の RUN_ID= が、
+dir /b /ad /o-d outputs_live_f15 の上位から見て manifest.json が存在する最初の runになっている
+
+もし “最新 run” が manifest 無しなら、**次点（manifest 有り）**を選ぶ
+
+3) manifest フィルタの「確実な動作確認」をする小技（おすすめ）
+
+「最新 run が manifest 有り」だとフィルタが効いているか分かりにくいので、一時的にリネームして挙動を確認すると確実です。
+
+cmd
+
+REM 最新runを仮に LATEST として扱う（手で入れるのが安全）
+set LATEST=live_f15_stage0_20251230_001927
+ren outputs_live_f15\%LATEST%\manifest.json manifest.json.bak
+
+make_report_and_monitor.bat > logs\auto_manifest_filter_test.log 2>&1
+type logs\auto_manifest_filter_test.log | findstr /c:"RUN_ID="
+
+ren outputs_live_f15\%LATEST%\manifest.json.bak manifest.json
+
+合格条件：
+
+リネーム後、RUN_ID= が **LATEST 以外（manifest ありの次点）**になる
+
+復元後、また LATEST が選ばれる（または manifest あり最新に戻る）
+
+4) 追加で“事故をさらに減らす”確認観点（短時間で効く）
+
+すでに実装済みならスキップでOKですが、テスト時に見ておくと良いです。
+
+失敗時でも RUN SUMMARY が出る（EXIT_CODE=1 など）
+
+popd が必ず走り、実行後にカレントディレクトリが変な場所に残らない
+
+cmd：実行前後で cd を表示して比較
+
+エラー時メッセージが「manifest が見つからない」など 原因が一意に分かる
+
+必要なら、あなたの RUN SUMMARY ブロックの “機械判定しやすい固定ログ文字列”（grep/findstr しやすいキー名、たとえば RUN_SUMMARY_BEGIN/END みたいな）も提案できます。ログ収集や CI の smoke に載せるなら、このキー固定が後々効きます。
+
+# =========================
+# 戦略置き場 - MMBOTエッジ探索計画
+# =========================
+
+状況の切り分け、かなりクリアです。いまは **「live の実行ログは取れているが、run_report が 0 本なので monitor が集計できず、判定ループが回っていない」**という “最後の 1 ピース不足” の状態ですね。
+
+（summary.json runs_total: 0 は、monitor 側から見ると「拾える run_report が存在しない」のと同義です）
+
+以下、最短で“監視/判定ループ稼働”まで持っていく手順を、いまのあなたの確認結果に合わせて “ログ/ファイルだけで判定できる” 形で提示します。
+
+まずやるべきことは 1 つだけ
+reports_live_f15/<run_id>/run_report.json を 最低 1 本生成する
+
+それができれば、monitor は runs_total: 0 → 1 になり、以降の「再利用/再生成/自動選択」のスモークテストが **全部“実データで”**回り始めます。
+
+最短の確認シナリオ（実データで end-to-end を通す）
+
+対象 run はあなたが確認したこれでOK：
+outputs_live_f15\live_f15_b3_2_gateb_20260115_012039
+
+1) run_report 生成（= reports ディレクトリが作られることがゴール）
+
+cmd
+
+set RUN_ID=live_f15_b3_2_gateb_20260115_012039
+make_report_and_monitor.bat %RUN_ID%
+dir reports_live_f15\%RUN_ID%\run_report.json
+
+PowerShell
+
+$env:RUN_ID="live_f15_b3_2_gateb_20260115_012039"
+.\make_report_and_monitor.bat $env:RUN_ID
+Get-Item "reports_live_f15\$env:RUN_ID\run_report.json"
+
+✅ 合格（この時点の最小条件）
+
+reports_live_f15\<RUN_ID>\run_report.json が 存在し、サイズ>0
+
+run_report.json.tmp が残っていない（安全置換が完了している）
+
+2) monitor が拾って summary が増えることを確認
+
+cmd
+
+type reports_live_f15\_monitor\summary.json | findstr /c:"runs_total"
+
+PowerShell
+
+Get-Content reports_live_f15\_monitor\summary.json | Select-String "runs_total"
+
+✅ 合格
+
+runs_total が 0 → 1（少なくとも増える）
+
+RUN SUMMARY の SUMMARY= に出たパス（あなたの実装）と整合している
+
+ここで詰まるポイントはだいたい 2 パターン
+パターンA：bat は「要件」を満たすが run_report 生成コマンドが未実装/未接続
+
+あなたの言う「監視レポート生成が未着手」がここなら、現象はこうなります：
+
+bat のログは整ってる（RUN SUMMARY / EXIT_CODE など）
+
+しかし reports_live_f15/<run_id> 自体が作られない or 作っても run_report.json が出ない
+
+この場合の解決は **“run_report を作る実体（CLI or スクリプト）を 1 本用意して接続”**です。
+
+パターンB：run_report コマンドはあるが失敗している（exit code / ログで必ず出る）
+
+python が見つからない
+
+モジュール名/パスが違う
+
+入力パス（outputs_live_f15…）の解決がズレている
+
+JSONL の読み取り例外で落ちている
+
+この場合は bat の run_report 実行部分の標準出力/標準エラーに必ず何か出るので、
+> logs\xxx.log 2>&1 で “run_report の失敗ログ” を固定化すれば一発で潰せます。
+
+“未着手”を最速で埋めるための実装最小セット（run_report の中身）
+
+あなたの運用要件はすでに **「ログ/ファイルだけで機械判定」**に寄っているので、run_report は最初これで十分です：
+
+run_report.json に最低限入れるもの（おすすめ）
+
+run_id
+
+paths.outputs_run, paths.reports_run
+
+必須ファイルの存在/バイト数（あなたが確認した7種）
+
+JSONL の行数（market_state / decision / orders / events / fills）
+
+created_at（生成時刻）
+
+health.required_logs_ok（全存在＆非0バイト）
+
+（任意）events 内の rate_limited 件数など、monitor が判定に使うキー
+
+これだけで monitor は “拾える” ようになります。
+
+すぐ使える run_report 生成スクリプト雛形（tmp安全置換込み）
+
+※エントリポイント名はあなたのリポジトリに合わせて配置してください（例：tools/run_report.py）。
+
+# tools/run_report.py
+import argparse, json, os
+from pathlib import Path
+from datetime import datetime, timezone
+
+REQUIRED = [
+    "market_state.jsonl",
+    "decision.jsonl",
+    "orders.jsonl",
+    "events.jsonl",
+    "fills.jsonl",
+    "config_resolved.yaml",
+    "manifest.json",
+]
+
+def file_info(p: Path):
+    return {
+        "exists": p.exists(),
+        "bytes": p.stat().st_size if p.exists() else 0,
+    }
+
+def count_nonempty_lines(jsonl_path: Path) -> int:
+    n = 0
+    with jsonl_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                n += 1
+    return n
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--outputs-run", required=True)
+    ap.add_argument("--reports-run", required=True)
+    ap.add_argument("--run-id", required=True)
+    args = ap.parse_args()
+
+    out_run = Path(args.outputs_run)
+    rep_run = Path(args.reports_run)
+    rep_run.mkdir(parents=True, exist_ok=True)
+
+    files = {}
+    counts = {}
+    required_ok = True
+
+    for name in REQUIRED:
+        p = out_run / name
+        info = file_info(p)
+        files[name] = info
+        if (not info["exists"]) or info["bytes"] == 0:
+            required_ok = False
+        if name.endswith(".jsonl") and info["exists"] and info["bytes"] > 0:
+            counts[name] = count_nonempty_lines(p)
+
+    report = {
+        "run_id": args.run_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "paths": {
+            "outputs_run": str(out_run),
+            "reports_run": str(rep_run),
+        },
+        "files": files,
+        "counts": counts,
+        "health": {
+            "required_logs_ok": required_ok,
+        },
+    }
+
+    tmp = rep_run / "run_report.json.tmp"
+    final = rep_run / "run_report.json"
+
+    tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, final)  # Windowsでも安全置換
+
+if __name__ == "__main__":
+    main()
+
+この雛形の良い点：
+
+0バイト判定の材料が run_report にも残る
+
+tmp → os.replace で 途中失敗時に壊れた run_report が残らない
+
+monitor は “run_report がある run” を拾えるようになる（runs_total が増える）
+
+make_report_and_monitor.bat 側で最小限つなぐ（例）
+
+（あなたが既に実装しているはずですが、未接続ならここが最後のピースです）
+
+python tools\run_report.py --run-id "%RUN_ID%" --outputs-run "%OUT_RUN%" --reports-run "%REP_RUN%"
+if errorlevel 1 call :finalize 1
+
+次のステップ（あなたの案のまま、判定を機械化する観点を追加）
+1) 明示 RUN_ID で実行（run_report が増えることが最優先）
+
+RUN SUMMARY に RUN_REPORT= が出る
+
+reports_live_f15\<RUN_ID>\run_report.json ができる
+
+summary.json runs_total が 1 以上になる
+
+2) RUN_ID 省略で実行（manifest フィルタが効くこと）
+
+RUN SUMMARY の RUN_ID= が “manifest あり最新”になっている
+
+その run で run_report.json が生成される
+
+必要なら、あなたの monitor が run_report のどのキーを前提にしているか（例：health / counts / events 集計など）に合わせて、上の雛形を「最小の互換スキーマ」に寄せた版も書けます。
+ただ、いまの段階では **“run_report を1本作って monitor に拾わせる”**のが最短で、ここが通れば実稼働の判定ループが実データで動き出します。
+
+# =========================
+# 監視/判定ループ 運用投入メモ
+# =========================
+
+いい感じに収束しました。ご報告の通り、
+
+再利用：run_report.json exists. skip generation. + EXIT_CODE=0 + SHA256一致
+
+FORCE再生成：FORCE=1 - regenerate run_report.json / generating... + EXIT_CODE=0（※決定的生成なのでSHA一致でもOK）
+
+0バイト復旧：run_report.json is empty. regenerate. + EXIT_CODE=0 + 2877 bytes復旧
+
+RUN_ID省略：manifest付き最新runを選択 + EXIT_CODE=0
+
+まで「ログ/ファイルで機械判定」できる状態になっています。これで **運用固定後の監視ループ基盤は“運用投入可能レベル”**に到達です。
+
+戦略置き場 - MMBOTエッジ探索計画
+
+次にやること（おすすめ順）
+1) FORCE再生成の“機械判定”を SHA 依存から外して固定する
+
+今回のように run_report が決定的生成だと SHA256 は一致しうるので、合格条件は以下のどちらか（または両方）に寄せるのが堅いです。
+
+ログ文字列で判定（すでに通っているので最小変更）
+
+例：FORCE=1 - regenerate run_report.json を「合格キー」に固定
+
+mtime（更新時刻）で判定（内容が同じでも置換なら更新される）
+
+cmd（対話）：
+
+for %A in (reports_live_f15\%RUN_ID%\run_report.json) do @echo %~tA
+
+cmd（バッチ内なら %%A）：
+
+for %%A in (reports_live_f15\%RUN_ID%\run_report.json) do echo %%~tA
+
+PowerShell：
+
+(Get-Item "reports_live_f15\$env:RUN_ID\run_report.json").LastWriteTime
+
+“決定的生成”自体は良い性質なので、判定側（スモークテスト）の期待をログ/mtime寄りに調整するのが正解です。
+
+2) バッチの回帰防止：特殊文字の出力ルールを 1 行だけ明文化
+
+今回の > と () の事故は、運用で再発しがちです。
+バッチの先頭コメントか MEMO に、これだけ固定すると強いです。
+
+echo内で > < | & ( ) ! を出すときは必ずエスケープ
+
+> は ^>、( は ^(、) は ^)、! は（delayed expansion次第で）要注意
+
+できれば 括弧はログに出さない（[not set] に置換）
+→ もっとも事故率が下がります
+
+3) 追加で “落ち方が正しい” ことだけ確認しておく（5分で終わる）
+
+今は「成功系の機械判定」が通っているので、次は 失敗時でもRUN SUMMARYが出て、EXIT_CODEが正しいことを2ケースだけ確認すると、現場運用の信頼性が上がります。
+
+(A) manifest が無い run しか無い（or わざと最新のmanifestをリネーム）
+
+期待：自動選択が失敗し、EXIT_CODE=1、ただし RUN SUMMARYは必ず出る。
+
+既に MEMO にある手順で OK（manifest を一時退避して auto 実行）
+
+(B) run_report.json.tmp が残っている（中断残骸）
+
+期待：次回実行で 安全置換され、tmpが消える（or 明示的に掃除される）。
+
+4) ここから先の“本丸”：mm_live の (A)→(B)（発注成立）に着手
+
+監視ループが回ったことで、次の改善が 必ず run_report/monitor で可視化できるようになりました。
+プロジェクト全体の次チケットは引き続きこれです（資料の「次にやること」と一致）。
+
+戦略置き場 - MMBOTエッジ探索計画
+
+rate limit バックオフ長期化（60秒〜、送信完全停止）
+
+replace を oid 保持時のみに限定／cancel_all 後の oid クリア
+
+min_send_interval_ms（例：5秒）
+
+cancel_all を単独送信に分離
+
+post-only 即約定エラーのスキップ/1tick逃がし
+
+Done判定（監視で見る指標）も既に明確で、
+
+sent が継続的に増える
+
+Too many cumulative requests が連発しない
+
+Cannot modify canceled or filled order がほぼ消える
+を monitor の summary で追える形にしていくのが次の一手です。
+
+戦略置き場 - MMBOTエッジ探索計画
+
+ちなみに：今回の「regenerate ファイル生成」再発を防ぐ小ワザ
+
+echo に > を含めたい場合は、ログ文字列を変えずに安全化できます。
+
+悪い例：echo FORCE=1 > regenerate ...（意図せずリダイレクト）
+
+良い例：echo FORCE=1 ^> regenerate run_report.json...（表示だけする）
+
+ただ、運用上は > を使わない文言に変えるのが最も堅いです。
+
+あなたが今固定しているログキー（skip generation / regenerate / empty / RUN SUMMARY）を前提に、“1コマンドで合否を返す smoke_check.bat”（ログをgrepして exit code 0/1 を返すだけの小さいやつ）を入れると、今の機械判定がそのまま CI/運用に乗ります。
+
+# =========================
+# 監視/判定ループ 運用スモーク（固定）
+# =========================
+
+# FORCE 再生成の合格判定は SHA 依存ではなくログ/mtime で固定する
+# - ログ判定キー: "FORCE=1 - regenerate run_report.json" と "generating run_report.json..."
+# - mtime 判定（内容が同じでも更新される）
+
+# cmd（対話）
+# for %A in (reports_live_f15\%RUN_ID%\run_report.json) do @echo %~tA
+
+# cmd（バッチ内）
+# for %%A in (reports_live_f15\%RUN_ID%\run_report.json) do echo %%~tA
+
+# PowerShell
+# (Get-Item "reports_live_f15\$env:RUN_ID\run_report.json").LastWriteTime
+
+# バッチの回帰防止ルール（1行固定）
+# echo内で > < | & ( ) ! を出すときは必ずエスケープ（可能なら [] に置換）
+# > は ^>、( は ^(、) は ^)、! は（delayed expansion次第で）要注意
+# できれば 括弧はログに出さない（[not set] に置換）→ 事故率が下がる
+
+# ちなみに：echo に > を含めたい場合
+# 悪い例：echo FORCE=1 > regenerate ...（意図せずリダイレクト）
+# 良い例：echo FORCE=1 ^> regenerate run_report.json...（表示だけする）
+
+# 1コマンド合否: smoke_check.bat（ログ/ファイル判定で exit code 0/1）
+# scripts\smoke_check.bat live_f15_b3_2_gateb_20260115_012039
+# scripts\smoke_check.bat  （RUN_ID省略 = manifest付き最新）
+
+# =========================
+# 戦略置き場 - MMBOTエッジ探索計画
+# =========================
+
+次にやること 1：CI で smoke_check を 1 回回す（最優先）
+
+CI で詰まりやすい点（先に潰す）
+
+Windows runner が必要（.bat 前提）
+
+smoke_check が参照する outputs_live_f15 が CI 上に存在する必要がある
+
+もし実データが CI に無いなら、最小 fixture run を repo に同梱（または CI で生成）するのが現実的
+
+失敗した時に原因が追えるよう、logs\smoke_* を artifact として必ず回収する
+
+GitHub Actions の例（Windows）
+
+（CI が GitHub でなくても、考え方は同じです）
+
+name: smoke_check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 必要ならPythonセットアップ（run_report/monitorがpythonなら）
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 依存があるならインストール（必要な場合のみ）
+      # - run: pip install -r requirements.txt
+
+      # fixture run を使う場合は RUN_ID を固定して実行
+      # 例：repoに outputs_live_f15\fixture_run_xxx\ を置く
+      - name: Run smoke_check
+        shell: cmd
+        run: |
+          scripts\smoke_check.bat fixture_run_xxx
+          echo ERRORLEVEL=%ERRORLEVEL%
+          if not "%ERRORLEVEL%"=="0" exit /b %ERRORLEVEL%
+
+      # 失敗時にログが欲しいので、成功/失敗に関わらず回収推奨
+      - name: Upload smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-logs
+          path: logs/smoke_*
+
+ポイント
+
+if: always() でログを必ず上げる（失敗時の再現が速い）
+
+fixture_run_xxx の run_id は manifest.json を含む必要あり（あなたの仕様どおり）
+
+次にやること 2：任意の「失敗時の落ち方テスト」を 1 回だけ実施
+
+これは CI には通常入れなくて OK（テストが破壊的＝manifest リネーム等が絡むため）。
+手元で 1 回だけやって “壊れ方が期待どおりか” を確認するのがコスパ良いです。
+
+実施の狙い
+
+FAIL になる
+
+exit code が 1
+
+ログが残る（RUN SUMMARY も出る）
+
+復元後に元どおり PASS に戻る
+
+（手順は MEMO に書いた方法で十分です）
+
+次にやること 3：運用をさらに堅くする小改善（必要になったら）
+
+A) smoke_check の破壊的ステップの隔離（将来の事故予防）
+
+force/zerobyte は reports_live_f15 を書き換えるので、
+将来的に「運用レポートを残したままスモークしたい」需要が出たら、
+
+REPORTS_DIR=reports_live_f15_smoke のように スモーク専用の reports を切る
+
+が効きます。
+（make_report_and_monitor.bat が reports dir を環境変数で受けられるようにしておくと、切替が楽です）
+
+B) ログキーの固定（すでにほぼできてる）
+
+いま合格条件がログ文字列に依存しているので、
+run_report.json exists. skip generation. などのキーは 今後も変更しない前提に固定すると、運用がさらに安定します。
+
+ここまで来たので、次の「本丸」は mm_live の (A)→(B)
+
+監視ループが固まったことで、次の開発（mm_live の発注成立）をやっても 差分が monitor で追える状態です。資料にある次チケットもここに収束しています。
+
+戦略置き場 - MMBOTエッジ探索計画
+
+結論
+
+次にやるなら、順番はこれが最短です。
+
+CI で smoke_check を 1 回回す（ログ artifact 回収込み）
+
+任意で manifest リネームの失敗テストを 1 回だけ手元で
+
+3.（必要になったら）スモーク用 reports 分離などの運用強化

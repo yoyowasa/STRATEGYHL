@@ -608,67 +608,183 @@ python scripts/monitor_live.py --reports-root reports_live_f15 --window 10
 
 #### 任意：1コマンド化
 `scripts\make_report_and_monitor.bat [RUN_ID] [WINDOW]` を用意して `run_report → monitor` を 1 回で実行する。  
-RUN_ID 省略時は `outputs_live_f15` の最新 run を使う。`FORCE=1` で再生成。
+RUN_ID 省略時は `outputs_live_f15` の最新 run（`manifest.json` があるもののみ）を使う。`FORCE=1` で再生成。
 
-#### スモークテスト1：既存 run で「生成→再利用」
-前提
-- 既存の RUN_ID を 1つ決める（`outputs_live_f15\%RUN_ID%` が存在するもの）
-- `make_report_and_monitor.bat` は RUN_ID を引数で渡す（自動最新選択は別テスト）
+補足（固定仕様）
+- run_id を唯一キーに固定
+- 文中は run_id、コマンド/環境変数は RUN_ID
+- 0バイトは「未生成」扱い
+- `run_report.json.tmp` → `run_report.json` の安全置換
+- `FORCE=1` で必ず再生成
+- 実行はリポジトリルート（`cd <repo_root>`）
+- 終了コード確認：cmd は `echo %ERRORLEVEL%`、PowerShell は `$LASTEXITCODE`
 
-手順（1回目：生成されること）
+#### スモークテスト：生成→再利用（同一 RUN_ID で 2 回）
+前提：リポジトリルートで実行（`cd <repo_root>`）
+
+0) RUN_ID をセット（cmd / PowerShell）
+
 ```cmd
-set RUN_ID=live_f15_stage0_YYYYMMDD_...
-del reports_live_f15\%RUN_ID%\run_report.json
-make_report_and_monitor.bat %RUN_ID%
-dir reports_live_f15\%RUN_ID%\run_report.json
+set RUN_ID=live_f15_stage0_20251230_001927
 ```
 
-手順（2回目：再利用されること）
+```powershell
+$env:RUN_ID = "live_f15_stage0_20251230_001927"
+```
+
+1) 事前確認（取り違え防止）
+
+```cmd
+dir outputs_live_f15\%RUN_ID%
+```
+
+```powershell
+Get-ChildItem "outputs_live_f15\$env:RUN_ID"
+```
+
+ここで存在しない RUN_ID なら中止（別 run を触る事故の芽）
+
+2) 1回目（生成されること）
+
+※ run_report を「必ず生成させたい」場合だけ、既存を消す/退避
+
+```cmd
+del reports_live_f15\%RUN_ID%\run_report.json
+del reports_live_f15\%RUN_ID%\run_report.json.tmp
+```
+
+```powershell
+Remove-Item "reports_live_f15\$env:RUN_ID\run_report.json"
+Remove-Item "reports_live_f15\$env:RUN_ID\run_report.json.tmp"
+```
+
+実行：
+
 ```cmd
 make_report_and_monitor.bat %RUN_ID%
+```
+
+```powershell
+.\make_report_and_monitor.bat $env:RUN_ID
+```
+
+確認（存在・0バイトじゃない・tmpが残ってない）：
+
+```cmd
+dir reports_live_f15\%RUN_ID%\run_report.json
+dir reports_live_f15\%RUN_ID%\run_report.json.tmp
+```
+
+```powershell
+Get-ChildItem "reports_live_f15\$env:RUN_ID\run_report.json"
+Get-ChildItem "reports_live_f15\$env:RUN_ID\run_report.json.tmp"
+```
+
+- run_report.json が存在し、サイズ > 0
+- run_report.json.tmp が存在しない（残ってたら安全置換の後始末漏れ）
+
+ハッシュ控え：
+
+```cmd
 certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
 ```
 
-合格条件（最小）
-- 1回目：run_report.json が作られ、monitor が通る
-- 2回目：run_report.json は作り直さず、monitor が通る
-- どちらも：ログに run_id / outputs / reports が明示され、混線が起きない
-- `reports_live_f15\_monitor\summary.json` が更新される
+3) 2回目（再利用されること）
 
-#### スモークテスト2：RUN_ID 省略時の「最新 run 自動選択」
-最新の定義は `outputs_live_f15` の更新時刻順（`dir /o-d`）に固定。
-
-手順
 ```cmd
-set RUN_ID=live_f15_stage0_YYYYMMDD_...
-type nul > outputs_live_f15\%RUN_ID%\_touch_latest.txt
+make_report_and_monitor.bat %RUN_ID%
+```
+
+```powershell
+.\make_report_and_monitor.bat $env:RUN_ID
+```
+
+再度ハッシュ：
+
+```cmd
+certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
+```
+
+合格条件（生成→再利用）
+- 1回目：run_report.json が 0バイトではない状態で生成され、monitor が走る
+- 2回目：ログに `run_report.json exists. skip generation.` が出て、SHA256 が 1 回目と一致
+- 両方：バッチ出力の run_id / outputs / reports が同一（混線なし）
+
+#### スモークテスト：FORCE=1 再生成（ログ + summary 更新）
+1) FORCE を付けて実行
+
+```cmd
+certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
+set FORCE=1
+make_report_and_monitor.bat %RUN_ID%
+set FORCE=
+certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
+```
+
+```powershell
+certutil -hashfile "reports_live_f15\$env:RUN_ID\run_report.json" SHA256
+$env:FORCE = "1"
+.\make_report_and_monitor.bat $env:RUN_ID
+Remove-Item Env:FORCE
+certutil -hashfile "reports_live_f15\$env:RUN_ID\run_report.json" SHA256
+```
+
+2) 確認ポイント
+- ログに `[INFO] FORCE=1 -> regenerate run_report.json` が出る
+- run_report.json の SHA256 が変わる（または「生成フェーズ実行ログ」が確実に出る）
+- summary の更新が分かる（`[INFO] summary:` のパス、または更新時刻）
+  - `dir reports_live_f15\_monitor\summary.json`
+
+#### スモークテスト：0バイト run_report の自動復旧（重要）
+手順
+
+```cmd
+type nul > reports_live_f15\%RUN_ID%\run_report.json
+make_report_and_monitor.bat %RUN_ID%
+dir reports_live_f15\%RUN_ID%\run_report.json
+dir reports_live_f15\%RUN_ID%\run_report.json.tmp
+```
+
+```powershell
+New-Item -ItemType File -Force "reports_live_f15\$env:RUN_ID\run_report.json" | Out-Null
+.\make_report_and_monitor.bat $env:RUN_ID
+Get-ChildItem "reports_live_f15\$env:RUN_ID\run_report.json"
+Get-ChildItem "reports_live_f15\$env:RUN_ID\run_report.json.tmp"
+```
+
+合格条件
+- 0バイトを検知して生成し直される（ログに `[WARN] run_report.json is empty. regenerate.`）
+- tmp が残らない
+
+#### 自動最新選択（dir /o-d 固定）のチェック
+最新の定義
+- `dir /b /ad /o-d outputs_live_f15` の先頭
+- 自動選択は `manifest.json` が存在する run のみ候補
+- 明示 RUN_ID 指定時は manifest の有無を問わない
+- 候補が無ければエラー終了（曖昧な成功を避ける）
+
+最低限の確認
+
+```cmd
 make_report_and_monitor.bat
 ```
 
 合格条件
-- 選ばれた run_id が想定どおりで、以降の処理もその run_id で一貫している
+- バッチ出力の `[INFO] run_id` が、想定している最新 run と一致
 
-#### スモークテスト3：FORCE=1 で「再生成」
-仕様
-- `FORCE=1` のときだけ run_report.json を必ず再生成
-- `FORCE!=1` のときは run_report.json が存在し、かつサイズ>0 なら再利用
-- 生成は `run_report.json.tmp` → 正常時に `run_report.json` へ置換
+動作確認の観点
+- manifest が無い最新 run があっても、それを選ばず次点を選ぶ
+- manifest がどれにも無いなら、明確に失敗する（ログで分かる）
 
-手順
-```cmd
-set RUN_ID=live_f15_stage0_YYYYMMDD_...
-certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
-set FORCE=1
-make_report_and_monitor.bat %RUN_ID%
-certutil -hashfile reports_live_f15\%RUN_ID%\run_report.json SHA256
-set FORCE=
-```
+#### 仕上げのおすすめ（実装済み）
+バッチの最後に run_id / outputs / reports / summary を 1 ブロックで再表示  
+→ 事故時に「どこを見ればいいか」が一発で分かる（成功/失敗どちらでも末尾に出力）
 
-合格条件
-- FORCE 実行で再生成が走る（ログに `[INFO] FORCE=1` と生成開始が出る）
-- ハッシュが変わるか、変わらない場合でも「生成フェーズが実行された」ログで確認できる
+#### まとめ（回す順番 / 最短の2ステップ）
+回す順番（効率順）
+- (A) 明示 RUN_ID → (B) 自動最新 → (C) 0バイト復旧
 
-#### まとめ（最短の2ステップ）
+最短の2ステップ
 1) `run_report.json` の存在確認  
 2) 存在する環境で `monitor_live.py --reports-root reports_live_f15 --window 10`
 
