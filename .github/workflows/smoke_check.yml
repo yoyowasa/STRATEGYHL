@@ -3,6 +3,12 @@ name: smoke_check
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "optional RUN_ID (blank = latest manifest run)"
+        required: false
+        default: ""
 
 jobs:
   smoke:
@@ -32,8 +38,14 @@ jobs:
 
       - name: Run smoke_check
         shell: cmd
+        env:
+          RUN_ID: ${{ github.event.inputs.run_id }}
         run: |
-          scripts\smoke_check.bat fixture_run_smoke_001
+          if "%RUN_ID%"=="" (
+            scripts\smoke_check.bat
+          ) else (
+            scripts\smoke_check.bat %RUN_ID%
+          )
           echo ERRORLEVEL=%ERRORLEVEL%
           if not "%ERRORLEVEL%"=="0" exit /b %ERRORLEVEL%
 
