@@ -91,6 +91,17 @@ def _is_rate_limit_error(message: object) -> bool:
     return "Too many cumulative requests" in message
 
 
+def _is_post_only_reject(message: object) -> bool:
+    if not isinstance(message, str):
+        return False
+    msg = message.lower()
+    if "post-only" in msg or "post only" in msg or "postonly" in msg:
+        return True
+    if "would immediately match" in msg or "would take" in msg or "would cross" in msg:
+        return True
+    return False
+
+
 def _extract_order_status_value(payload: object) -> Optional[str]:
     if isinstance(payload, dict):
         for key in ("status", "state", "orderStatus"):
@@ -915,6 +926,49 @@ def run_live(
         record.update(detail)
         _write_jsonl(events_log, record)
 
+    def _note_rate_limit(now_ms: int, source: str) -> None:
+        nonlocal cooldown_until_ms, backoff_ms
+        if rate_limit_backoff_ms <= 0:
+            return
+        cooldown_ms = backoff_ms if backoff_ms > 0 else rate_limit_backoff_ms
+        cooldown_until_ms = now_ms + cooldown_ms
+        backoff_base = max(backoff_ms, rate_limit_backoff_ms) if backoff_ms > 0 else rate_limit_backoff_ms
+        backoff_ms = min(backoff_base * 2, rate_limit_backoff_max_ms)
+        log_event(
+            "rate_limited",
+            {
+                "source": source,
+                "cooldown_ms": cooldown_ms,
+                "cooldown_until_ms": cooldown_until_ms,
+                "next_backoff_ms": backoff_ms,
+            },
+        )
+
+    def _reset_rate_limit_backoff() -> None:
+        nonlocal backoff_ms
+        if rate_limit_backoff_ms > 0:
+            backoff_ms = rate_limit_backoff_ms
+
+    def _enforce_min_send_interval(now_ms: int, reason: str) -> int:
+        nonlocal last_send_ts_ms
+        if min_send_interval_ms <= 0 or not last_send_ts_ms:
+            return now_ms
+        age_ms = now_ms - last_send_ts_ms
+        if age_ms >= min_send_interval_ms:
+            return now_ms
+        wait_ms = min_send_interval_ms - age_ms
+        log_event(
+            "send_wait",
+            {
+                "reason": reason,
+                "age_ms": age_ms,
+                "wait_ms": wait_ms,
+                "min_send_interval_ms": min_send_interval_ms,
+            },
+        )
+        time.sleep(max(0.0, wait_ms / 1000.0))
+        return _now_ms()
+
     def _fill_time_ms(fill: dict) -> Optional[int]:
         for key in ("time", "timestamp", "ts", "ts_ms", "time_ms"):
             val = fill.get(key)
@@ -1069,11 +1123,24 @@ def run_live(
                 last_missing_oid_by_side[side] = None
 
     def cancel_open_orders_until_clear(reason: str, now_ms: int) -> None:
-        nonlocal batch_id, last_batch_ts, needs_open_orders_sync, active_orders
+        nonlocal batch_id, last_batch_ts, needs_open_orders_sync, active_orders, last_send_ts_ms
+        nonlocal cooldown_until_ms, backoff_ms, last_missing_oid_by_side
         if not sender.enabled:
+            return
+        if cooldown_until_ms and now_ms < cooldown_until_ms:
+            log_event(
+                "send_skip",
+                {
+                    "reason": "rate_limit_cooldown",
+                    "action": "open_orders_cancel",
+                    "cooldown_until_ms": cooldown_until_ms,
+                    "remaining_ms": cooldown_until_ms - now_ms,
+                },
+            )
             return
         wait_s = open_orders_cancel_wait_ms / 1000.0 if open_orders_cancel_wait_ms > 0 else 0.0
         for attempt in range(1, open_orders_cancel_max_attempts + 1):
+            now_ms = _now_ms()
             try:
                 open_orders = sender.fetch_open_orders()
             except Exception as exc:  # noqa: BLE001
@@ -1101,11 +1168,25 @@ def run_live(
             if not cancels:
                 active_orders["buy"] = None
                 active_orders["sell"] = None
+                last_missing_oid_by_side["buy"] = None
+                last_missing_oid_by_side["sell"] = None
                 needs_open_orders_sync = True
                 sync_open_orders("open_orders_cleared", now_ms, force=True)
                 log_event(
                     "open_orders_cleared",
                     {"reason": reason, "attempt": attempt - 1, "open_orders_count": 0},
+                )
+                return
+            now_ms = _enforce_min_send_interval(now_ms, f"open_orders_cancel:{reason}")
+            if cooldown_until_ms and now_ms < cooldown_until_ms:
+                log_event(
+                    "send_skip",
+                    {
+                        "reason": "rate_limit_cooldown",
+                        "action": "open_orders_cancel",
+                        "cooldown_until_ms": cooldown_until_ms,
+                        "remaining_ms": cooldown_until_ms - now_ms,
+                    },
                 )
                 return
             log_event(
@@ -1115,6 +1196,7 @@ def run_live(
             batch_id += 1
             send_statuses = sender.send_cancel_batch(cancels)
             rate_limited = False
+            any_sent = False
             for order, send_status in zip(cancels, send_statuses):
                 _write_jsonl(
                     orders_log,
@@ -1136,17 +1218,23 @@ def run_live(
                         "error": send_status.get("error"),
                     },
                 )
+                if send_status.get("status") != "error":
+                    any_sent = True
                 if _is_rate_limit_error(send_status.get("error")):
                     rate_limited = True
             needs_open_orders_sync = True
             sync_open_orders("open_orders_cancel", _now_ms(), force=True)
             last_batch_ts = now_ms
+            last_send_ts_ms = now_ms
             if rate_limited:
                 log_event(
                     "open_orders_cancel_rate_limited",
                     {"reason": reason, "attempt": attempt},
                 )
+                _note_rate_limit(now_ms, "open_orders_cancel")
                 return
+            if any_sent:
+                _reset_rate_limit_backoff()
             if wait_s:
                 time.sleep(wait_s)
         log_event(
@@ -1362,6 +1450,7 @@ def run_live(
     prev_boost: Optional[bool] = None
     nonce_counter = _now_ms()
     last_quote_ts_ms: Dict[str, int] = {"buy": 0, "sell": 0}
+    post_only_escape_ticks: Dict[str, int] = {"buy": 0, "sell": 0}
     cooldown_until_ms = 0
     backoff_ms = rate_limit_backoff_ms
     last_send_ts_ms = 0
@@ -1425,11 +1514,26 @@ def run_live(
             cancel_open_orders_until_clear("startup", _now_ms())
         else:
             batch_id += 1
-            cancel_status = sender.cancel_all()
+            now_ms = _now_ms()
+            if cooldown_until_ms and now_ms < cooldown_until_ms:
+                log_event(
+                    "send_skip",
+                    {
+                        "reason": "rate_limit_cooldown",
+                        "action": "cancel_all",
+                        "cooldown_until_ms": cooldown_until_ms,
+                        "remaining_ms": cooldown_until_ms - now_ms,
+                        "context": "startup",
+                    },
+                )
+            else:
+                now_ms = _enforce_min_send_interval(now_ms, "cancel_all:startup")
+                cancel_status = sender.cancel_all()
+                last_send_ts_ms = now_ms
             _write_jsonl(
                 orders_log,
                 {
-                    "ts_ms": _now_ms(),
+                    "ts_ms": now_ms,
                     "action": "cancel_all",
                     "side": "both",
                     "px": None,
@@ -1438,11 +1542,18 @@ def run_live(
                     "client_oid": None,
                     "batch_id": batch_id,
                     "reason": "startup",
-                    "status": cancel_status.get("status"),
-                    "error": cancel_status.get("error"),
+                    "status": cancel_status.get("status") if "cancel_status" in locals() else "skipped",
+                    "error": cancel_status.get("error") if "cancel_status" in locals() else "cooldown_skip",
                 },
             )
+            active_orders = {"buy": None, "sell": None}
+            last_missing_oid_by_side = {"buy": None, "sell": None}
             needs_open_orders_sync = True
+            if "cancel_status" in locals():
+                if _is_rate_limit_error(cancel_status.get("error")):
+                    _note_rate_limit(now_ms, "cancel_all")
+                elif cancel_status.get("status") != "error":
+                    _reset_rate_limit_backoff()
 
     start_time = time.monotonic()
 
@@ -1699,8 +1810,10 @@ def run_live(
             bid_guard = (guard_tick or 0.0) * guard_ticks
             ask_guard = (guard_tick or 0.0) * guard_ticks
             if not skip_quote_cycle:
-                extra_bid = (guard_tick or 0.0) * extra_bid_ticks
-                extra_ask = (guard_tick or 0.0) * extra_ask_ticks
+                escape_bid_ticks = post_only_escape_ticks.get("buy", 0)
+                escape_ask_ticks = post_only_escape_ticks.get("sell", 0)
+                extra_bid = (guard_tick or 0.0) * (extra_bid_ticks + escape_bid_ticks)
+                extra_ask = (guard_tick or 0.0) * (extra_ask_ticks + escape_ask_ticks)
                 if final_bid_px is not None and best_ask is not None:
                     final_bid_px = min(final_bid_px, best_ask - bid_guard - extra_bid)
                 if final_ask_px is not None and best_bid is not None:
@@ -1765,6 +1878,8 @@ def run_live(
                     "market_spread_bps": spread_bps,
                     "spread_filter_active": spread_filter_active,
                     "spread_filter_min_bps": min_book_spread_bps,
+                    "post_only_escape_bid_ticks": post_only_escape_ticks.get("buy", 0),
+                    "post_only_escape_ask_ticks": post_only_escape_ticks.get("sell", 0),
                     "base_size": float(params.base_size),
                     "boost_size_factor": float(params.boost_size_factor),
                     "raw_bid_sz": raw_bid_sz,
@@ -1794,7 +1909,23 @@ def run_live(
                     last_batch_ts = ts_ms
                 elif active_orders["buy"] is not None or active_orders["sell"] is not None:
                     batch_id += 1
-                    cancel_status = sender.cancel_all()
+                    send_ts_ms = ts_ms
+                    if cooldown_until_ms and ts_ms < cooldown_until_ms:
+                        log_event(
+                            "send_skip",
+                            {
+                                "reason": "rate_limit_cooldown",
+                                "action": "cancel_all",
+                                "cooldown_until_ms": cooldown_until_ms,
+                                "remaining_ms": cooldown_until_ms - ts_ms,
+                                "context": "reconnect",
+                            },
+                        )
+                        cancel_status = {"status": "skipped", "error": "cooldown_skip"}
+                    else:
+                        send_ts_ms = _enforce_min_send_interval(ts_ms, "cancel_all:reconnect")
+                        cancel_status = sender.cancel_all()
+                        last_send_ts_ms = send_ts_ms
                     _write_jsonl(
                         orders_log,
                         {
@@ -1812,8 +1943,13 @@ def run_live(
                         },
                     )
                     active_orders = {"buy": None, "sell": None}
+                    last_missing_oid_by_side = {"buy": None, "sell": None}
                     needs_open_orders_sync = True
                     last_batch_ts = ts_ms
+                    if _is_rate_limit_error(cancel_status.get("error")):
+                        _note_rate_limit(send_ts_ms, "cancel_all")
+                    elif cancel_status.get("status") != "error":
+                        _reset_rate_limit_backoff()
                 prev_mid = mid
                 prev_best_bid = best_bid
                 prev_best_ask = best_ask
@@ -2043,6 +2179,7 @@ def run_live(
                             status_kind = send_status.get("status_kind")
                             if send_status.get("status") != "error":
                                 any_sent = True
+                                post_only_escape_ticks[order["side"]] = 0
                                 if status_kind in {"resting", "partial"}:
                                     active_orders[order["side"]] = {
                                         "price": order["price"],
@@ -2071,6 +2208,18 @@ def run_live(
                                             else status_res,
                                         },
                                     )
+                            elif _is_post_only_reject(send_status.get("error")):
+                                post_only_escape_ticks[order["side"]] = max(
+                                    post_only_escape_ticks.get(order["side"], 0), 1
+                                )
+                                log_event(
+                                    "post_only_reject",
+                                    {
+                                        "side": order["side"],
+                                        "action": "new",
+                                        "error": send_status.get("error"),
+                                    },
+                                )
                             if _is_rate_limit_error(send_status.get("error")):
                                 rate_limited = True
                         for order in new_orders:
@@ -2162,6 +2311,7 @@ def run_live(
                             )
                             if send_status.get("status") != "error":
                                 any_sent = True
+                                post_only_escape_ticks[order["side"]] = 0
                                 active_orders[order["side"]] = {
                                     "price": order["price"],
                                     "size": order["size"],
@@ -2176,6 +2326,18 @@ def run_live(
                                 active_orders[order["side"]] = None
                                 needs_open_orders_sync = True
                                 force_open_orders_sync = True
+                            if _is_post_only_reject(send_status.get("error")):
+                                post_only_escape_ticks[order["side"]] = max(
+                                    post_only_escape_ticks.get(order["side"], 0), 1
+                                )
+                                log_event(
+                                    "post_only_reject",
+                                    {
+                                        "side": order["side"],
+                                        "action": "replace",
+                                        "error": send_status.get("error"),
+                                    },
+                                )
                             if _is_rate_limit_error(send_status.get("error")):
                                 rate_limited = True
                         for order in modify_orders:
