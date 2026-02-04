@@ -10,7 +10,7 @@ strategy:
   max_positions: 10
   extra_params:
     base_spread_bps: 0.15
-    boost_spread_add_bps: 5.0
+    boost_spread_add_bps: 4.0
     base_size: 0.005
     inventory_skew_bps: 0.2
     inventory_target: 0.0
