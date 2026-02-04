@@ -1,4 +1,6 @@
-cd E:\STRATEGYHL
+cd C:\BOT\STRATEGYHL
+.\.venv\Scripts\Activate.ps1
+
 # ステージ：作業ツリーの全変更（追加・更新・削除）を一括
 git add -A
 

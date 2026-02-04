@@ -25,6 +25,10 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _now_m() -> float:
+    return time.monotonic()
+
+
 def _write_jsonl(path: Path, record: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
@@ -89,6 +93,12 @@ def _is_rate_limit_error(message: object) -> bool:
     if not isinstance(message, str):
         return False
     return "Too many cumulative requests" in message
+
+
+def _is_insufficient_margin(message: object) -> bool:
+    if not isinstance(message, str):
+        return False
+    return "insufficient margin" in message.lower()
 
 
 def _is_post_only_reject(message: object) -> bool:
@@ -352,6 +362,14 @@ class _OrderSender:
     @property
     def vault_address(self) -> Optional[str]:
         return self._vault_address
+
+    def fetch_user_state(self) -> dict:
+        if not self._exchange or not self._account_address:
+            return {"status": "error", "error": "missing_exchange_or_address"}
+        try:
+            return self._exchange.info.user_state(self._account_address)
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "error": str(exc)}
 
     def _init_client(self, base_url: str, coin: str, secret_env: str):
         try:
@@ -803,6 +821,45 @@ def run_live(
     if min_send_interval_ms < 0:
         min_send_interval_ms = 0
     try:
+        account_state_log_interval_ms = int(extra.get("account_state_log_interval_ms", 1000))
+    except (TypeError, ValueError):
+        account_state_log_interval_ms = 1000
+    if account_state_log_interval_ms < 0:
+        account_state_log_interval_ms = 0
+    try:
+        cancel_all_cooldown_ms = int(extra.get("cancel_all_cooldown_ms", 1500))
+    except (TypeError, ValueError):
+        cancel_all_cooldown_ms = 1500
+    if cancel_all_cooldown_ms < 0:
+        cancel_all_cooldown_ms = 0
+    try:
+        margin_cooldown_ms = int(extra.get("margin_cooldown_ms", 1500))
+    except (TypeError, ValueError):
+        margin_cooldown_ms = 1500
+    if margin_cooldown_ms < 0:
+        margin_cooldown_ms = 0
+    try:
+        resync_min_interval_ms = int(extra.get("resync_min_interval_ms", 500))
+    except (TypeError, ValueError):
+        resync_min_interval_ms = 500
+    if resync_min_interval_ms < 0:
+        resync_min_interval_ms = 0
+    try:
+        replace_guard_ms = int(extra.get("replace_guard_ms", 2000))
+    except (TypeError, ValueError):
+        replace_guard_ms = 2000
+    if replace_guard_ms < 0:
+        replace_guard_ms = 0
+    default_open_orders_fresh_ms = 1500
+    if "replace_guard_ms" in extra and "open_orders_fresh_ms" not in extra:
+        default_open_orders_fresh_ms = replace_guard_ms
+    try:
+        open_orders_fresh_ms = int(extra.get("open_orders_fresh_ms", default_open_orders_fresh_ms))
+    except (TypeError, ValueError):
+        open_orders_fresh_ms = default_open_orders_fresh_ms
+    if open_orders_fresh_ms < 0:
+        open_orders_fresh_ms = 0
+    try:
         open_orders_sync_sec = float(extra.get("open_orders_sync_sec", 5))
     except (TypeError, ValueError):
         open_orders_sync_sec = 5.0
@@ -888,6 +945,12 @@ def run_live(
         "rate_limit_backoff_ms": rate_limit_backoff_ms,
         "rate_limit_backoff_max_ms": rate_limit_backoff_max_ms,
         "min_send_interval_ms": min_send_interval_ms,
+        "account_state_log_interval_ms": account_state_log_interval_ms,
+        "cancel_all_cooldown_ms": cancel_all_cooldown_ms,
+        "margin_cooldown_ms": margin_cooldown_ms,
+        "resync_min_interval_ms": resync_min_interval_ms,
+        "replace_guard_ms": replace_guard_ms,
+        "open_orders_fresh_ms": open_orders_fresh_ms,
         "open_orders_sync_sec": open_orders_sync_sec,
         "order_status_check": order_status_check,
         "open_orders_cancel_on_start": open_orders_cancel_on_start,
@@ -925,6 +988,88 @@ def run_live(
         record = {"ts_ms": _now_ms(), "event": event}
         record.update(detail)
         _write_jsonl(events_log, record)
+
+    def log_account_state(reason: str, now_ms: int, force: bool = False) -> None:
+        nonlocal last_account_state_log_ts
+        if account_state_log_interval_ms <= 0:
+            return
+        if not force and last_account_state_log_ts and (
+            now_ms - last_account_state_log_ts < account_state_log_interval_ms
+        ):
+            return
+        last_account_state_log_ts = now_ms
+        if not sender.enabled:
+            return
+        state = sender.fetch_user_state()
+        if not isinstance(state, dict) or state.get("status") == "error":
+            log_event(
+                "account_state_error",
+                {"reason": reason, "error": state.get("error") if isinstance(state, dict) else str(state)},
+            )
+            return
+        summary = state.get("marginSummary") if isinstance(state.get("marginSummary"), dict) else {}
+        cross = (
+            state.get("crossMarginSummary")
+            if isinstance(state.get("crossMarginSummary"), dict)
+            else {}
+        )
+        account_value = _safe_float(summary.get("accountValue"))
+        if account_value is None:
+            account_value = _safe_float(cross.get("accountValue"))
+        total_margin_used = _safe_float(summary.get("totalMarginUsed"))
+        if total_margin_used is None:
+            total_margin_used = _safe_float(cross.get("totalMarginUsed"))
+        total_ntl_pos = _safe_float(summary.get("totalNtlPos"))
+        if total_ntl_pos is None:
+            total_ntl_pos = _safe_float(cross.get("totalNtlPos"))
+        total_raw_usd = _safe_float(summary.get("totalRawUsd"))
+        if total_raw_usd is None:
+            total_raw_usd = _safe_float(cross.get("totalRawUsd"))
+        withdrawable = _safe_float(state.get("withdrawable"))
+        available_margin = None
+        if account_value is not None and total_margin_used is not None:
+            available_margin = account_value - total_margin_used
+
+        coin_pos = None
+        asset_positions = state.get("assetPositions")
+        if isinstance(asset_positions, list) and sender.coin:
+            target = _canonical_symbol(str(sender.coin))
+            for entry in asset_positions:
+                if not isinstance(entry, dict):
+                    continue
+                pos = entry.get("position")
+                if not isinstance(pos, dict):
+                    continue
+                coin_val = pos.get("coin")
+                if coin_val and _canonical_symbol(str(coin_val)) == target:
+                    coin_pos = pos
+                    break
+
+        log_event(
+            "account_state",
+            {
+                "reason": reason,
+                "account_value": account_value,
+                "total_margin_used": total_margin_used,
+                "available_margin": available_margin,
+                "total_ntl_pos": total_ntl_pos,
+                "total_raw_usd": total_raw_usd,
+                "withdrawable": withdrawable,
+                "open_orders_total_count": open_orders_total_count,
+                "open_orders_total_notional": open_orders_total_notional,
+                "open_orders_coin_count": open_orders_coin_count,
+                "open_orders_coin_notional": open_orders_coin_notional,
+                "position": float(state.get("position") or 0.0) if isinstance(state.get("position"), (int, float)) else None,
+                "coin_position_size": _safe_float(coin_pos.get("szi")) if coin_pos else None,
+                "coin_position_value": _safe_float(coin_pos.get("positionValue")) if coin_pos else None,
+                "coin_margin_used": _safe_float(coin_pos.get("marginUsed")) if coin_pos else None,
+                "coin_leverage_type": coin_pos.get("leverage", {}).get("type") if isinstance(coin_pos, dict) else None,
+                "coin_leverage_value": _safe_float(coin_pos.get("leverage", {}).get("value")) if isinstance(coin_pos, dict) else None,
+                "max_abs_position": params.max_abs_position,
+                "open_orders_user": sender.open_orders_user,
+                "account_address": sender.account_address,
+            },
+        )
 
     def _note_rate_limit(now_ms: int, source: str) -> None:
         nonlocal cooldown_until_ms, backoff_ms
@@ -987,6 +1132,7 @@ def run_live(
 
     def sync_open_orders(reason: str, now_ms: int, force: bool = False) -> None:
         nonlocal last_open_orders_sync_ts, needs_open_orders_sync, active_orders, logged_open_orders_sample, last_missing_oid_by_side
+        nonlocal open_orders_ids, open_orders_total_count, open_orders_total_notional, open_orders_coin_count, open_orders_coin_notional
         if not sender.enabled:
             return
         if open_orders_sync_ms <= 0 and not force:
@@ -1006,6 +1152,11 @@ def run_live(
         trade_coin = sender.coin
         prev_active = {side: active_orders.get(side) for side in ("buy", "sell")}
         per_side: Dict[str, dict] = {}
+        open_orders_ids = set()
+        open_orders_total_count = 0
+        open_orders_total_notional = 0.0
+        open_orders_coin_count = 0
+        open_orders_coin_notional = 0.0
         matched = 0
         sample: Optional[dict] = None
         for order in open_orders:
@@ -1024,6 +1175,14 @@ def run_live(
             matched += 1
             if sample is None:
                 sample = order
+            oid_val = order.get("oid")
+            if isinstance(oid_val, int):
+                open_orders_ids.add(oid_val)
+            elif isinstance(oid_val, str) and oid_val.isdigit():
+                try:
+                    open_orders_ids.add(int(oid_val))
+                except ValueError:
+                    pass
             ts = order.get("timestamp")
             ts_ms = int(ts) if isinstance(ts, (int, float)) else 0
             existing = per_side.get(side)
@@ -1052,6 +1211,10 @@ def run_live(
             {
                 "reason": reason,
                 "open_orders_count": matched,
+                "open_orders_total_count": open_orders_total_count,
+                "open_orders_total_notional": open_orders_total_notional,
+                "open_orders_coin_count": open_orders_coin_count,
+                "open_orders_coin_notional": open_orders_coin_notional,
                 "buy_oid": active_orders["buy"]["exchange_id"] if active_orders["buy"] else None,
                 "sell_oid": active_orders["sell"]["exchange_id"] if active_orders["sell"] else None,
                 "open_bid_present": active_orders["buy"] is not None,
@@ -1437,6 +1600,11 @@ def run_live(
     batch_gap_ms = int(float(order_batch_sec) * 1000.0) if order_batch_sec is not None else 0
 
     active_orders: Dict[str, Optional[dict]] = {"buy": None, "sell": None}
+    open_orders_ids: set[int] = set()
+    open_orders_total_count = 0
+    open_orders_total_notional = 0.0
+    open_orders_coin_count = 0
+    open_orders_coin_notional = 0.0
     last_open_orders_sync_ts = 0
     needs_open_orders_sync = False
     logged_open_orders_sample = False
@@ -1454,6 +1622,11 @@ def run_live(
     cooldown_until_ms = 0
     backoff_ms = rate_limit_backoff_ms
     last_send_ts_ms = 0
+    last_cancel_all_ts = 0
+    last_resync_req_ts = 0
+    margin_cooldown_until_m = 0.0
+    missing_guard_oid_by_side: Dict[str, Optional[int]] = {"buy": None, "sell": None}
+    last_account_state_log_ts = 0
 
     state: Dict[str, object] = {
         "position": 0.0,
@@ -1529,6 +1702,7 @@ def run_live(
             else:
                 now_ms = _enforce_min_send_interval(now_ms, "cancel_all:startup")
                 cancel_status = sender.cancel_all()
+                last_cancel_all_ts = now_ms
                 last_send_ts_ms = now_ms
             _write_jsonl(
                 orders_log,
@@ -1925,6 +2099,7 @@ def run_live(
                     else:
                         send_ts_ms = _enforce_min_send_interval(ts_ms, "cancel_all:reconnect")
                         cancel_status = sender.cancel_all()
+                        last_cancel_all_ts = send_ts_ms
                         last_send_ts_ms = send_ts_ms
                     _write_jsonl(
                         orders_log,
@@ -1965,6 +2140,8 @@ def run_live(
                 sync_open_orders("forced" if needs_open_orders_sync else "periodic", ts_ms)
             if fills_sync_ms > 0:
                 sync_fills("periodic", ts_ms)
+            if account_state_log_interval_ms > 0:
+                log_account_state("periodic", ts_ms)
             if (
                 (gateb_fills_min is not None or gateb_notional_min is not None)
                 and (gateb_fills_min is None or gateb_fills_count >= gateb_fills_min)
@@ -2024,14 +2201,91 @@ def run_live(
                 prev_boost = boost_active
                 time.sleep(max(0.0, poll_interval_ms / 1000.0))
                 continue
+            now_m = _now_m()
+            if cancel_all_cooldown_ms > 0 and last_cancel_all_ts:
+                cancel_all_until_ms = last_cancel_all_ts + cancel_all_cooldown_ms
+                if ts_ms < cancel_all_until_ms:
+                    log_event(
+                        "send_skip",
+                        {
+                            "reason": "cancel_all_cooldown",
+                            "cooldown_until_ms": cancel_all_until_ms,
+                            "remaining_ms": cancel_all_until_ms - ts_ms,
+                        },
+                    )
+                    prev_mid = mid
+                    prev_best_bid = best_bid
+                    prev_best_ask = best_ask
+                    prev_ts = ts_ms
+                    prev_boost = boost_active
+                    time.sleep(max(0.0, poll_interval_ms / 1000.0))
+                    continue
+            if margin_cooldown_until_m and now_m < margin_cooldown_until_m:
+                remaining_ms = int((margin_cooldown_until_m - now_m) * 1000)
+                log_event(
+                    "send_skip",
+                    {
+                        "reason": "margin_cooldown",
+                        "cooldown_until_m": margin_cooldown_until_m,
+                        "remaining_ms": remaining_ms,
+                        "now_m": now_m,
+                        "cooldown_ms": margin_cooldown_ms,
+                    },
+                )
+                prev_mid = mid
+                prev_best_bid = best_bid
+                prev_best_ask = best_ask
+                prev_ts = ts_ms
+                prev_boost = boost_active
+                time.sleep(max(0.0, poll_interval_ms / 1000.0))
+                continue
+            if open_orders_fresh_ms > 0 and (ts_ms - last_open_orders_sync_ts) > open_orders_fresh_ms:
+                if resync_min_interval_ms == 0 or (
+                    ts_ms - last_resync_req_ts >= resync_min_interval_ms
+                ):
+                    needs_open_orders_sync = True
+                    sync_open_orders("stale_guard", ts_ms, force=True)
+                    last_resync_req_ts = ts_ms
+                log_event(
+                    "send_skip",
+                    {
+                        "reason": "stale_guard",
+                        "open_orders_fresh_ms": open_orders_fresh_ms,
+                        "last_open_orders_sync_ts": last_open_orders_sync_ts,
+                        "last_resync_req_ts": last_resync_req_ts,
+                        "resync_min_interval_ms": resync_min_interval_ms,
+                    },
+                )
+                log_event(
+                    "replace_guard",
+                    {
+                        "reason": "replace->skip (stale_open_orders_sync)",
+                        "open_orders_fresh_ms": open_orders_fresh_ms,
+                        "last_open_orders_sync_ts": last_open_orders_sync_ts,
+                        "last_resync_req_ts": last_resync_req_ts,
+                        "resync_min_interval_ms": resync_min_interval_ms,
+                    },
+                )
+                prev_mid = mid
+                prev_best_bid = best_bid
+                prev_best_ask = best_ask
+                prev_ts = ts_ms
+                prev_boost = boost_active
+                time.sleep(max(0.0, poll_interval_ms / 1000.0))
+                continue
 
             force_open_orders_sync = False
             actions = []
+            skip_cycle_reason = None
             for side in ("buy", "sell"):
                 target_px = final_bid_px if side == "buy" else final_ask_px
                 target_sz = final_bid_sz if side == "buy" else final_ask_sz
                 active = active_orders[side]
                 active_exchange_id = active.get("exchange_id") if active else None
+                if active_exchange_id is None or (
+                    active_exchange_id is not None and active_exchange_id in open_orders_ids
+                ):
+                    missing_guard_oid_by_side[side] = None
                 action = None
                 force_replenish = False
                 if target_sz <= 0:
@@ -2066,6 +2320,47 @@ def run_live(
                         continue
                 if action is None:
                     continue
+                if action == "replace":
+                    replace_reason = None
+                    if last_cancel_all_ts and last_open_orders_sync_ts < last_cancel_all_ts:
+                        replace_reason = "replace->new (recent_cancel_all)"
+                    elif active_exchange_id is not None and active_exchange_id not in open_orders_ids:
+                        if missing_guard_oid_by_side.get(side) != active_exchange_id:
+                            missing_guard_oid_by_side[side] = active_exchange_id
+                            if resync_min_interval_ms == 0 or (
+                                ts_ms - last_resync_req_ts >= resync_min_interval_ms
+                            ):
+                                needs_open_orders_sync = True
+                                sync_open_orders("missing_guard", ts_ms, force=True)
+                                last_resync_req_ts = ts_ms
+                            log_event(
+                                "replace_guard",
+                                {
+                                    "side": side,
+                                    "reason": "replace->skip (order_id_missing_stage1)",
+                                    "exchange_id": active_exchange_id,
+                                    "last_open_orders_sync_ts": last_open_orders_sync_ts,
+                                    "last_resync_req_ts": last_resync_req_ts,
+                                    "resync_min_interval_ms": resync_min_interval_ms,
+                                },
+                            )
+                            skip_cycle_reason = "missing_guard_stage1"
+                            break
+                        replace_reason = "replace->new (order_id_missing_stage2)"
+                        missing_guard_oid_by_side[side] = None
+                    if replace_reason:
+                        log_event(
+                            "replace_guard",
+                            {
+                                "side": side,
+                                "reason": replace_reason,
+                                "exchange_id": active_exchange_id,
+                                "last_open_orders_sync_ts": last_open_orders_sync_ts,
+                                "last_cancel_all_ts": last_cancel_all_ts,
+                            },
+                        )
+                        action = "new"
+                        force_replenish = True
                 if spread_filter_active and action == "cancel":
                     force_replenish = True
                 if min_quote_lifetime_ms > 0:
@@ -2088,6 +2383,23 @@ def run_live(
                         )
                         continue
                 actions.append((action, side, target_px, target_sz, active, force_replenish))
+
+            if skip_cycle_reason:
+                log_event(
+                    "send_skip",
+                    {
+                        "reason": skip_cycle_reason,
+                        "last_open_orders_sync_ts": last_open_orders_sync_ts,
+                        "last_resync_req_ts": last_resync_req_ts,
+                    },
+                )
+                prev_mid = mid
+                prev_best_bid = best_bid
+                prev_best_ask = best_ask
+                prev_ts = ts_ms
+                prev_boost = boost_active
+                time.sleep(max(0.0, poll_interval_ms / 1000.0))
+                continue
 
             if actions:
                 batch_action = None
@@ -2160,6 +2472,8 @@ def run_live(
                                     "side": order["side"],
                                     "px": order["price"],
                                     "sz": order["size"],
+                                    "requested_px": raw_bid_px if order["side"] == "buy" else raw_ask_px,
+                                    "requested_sz": raw_bid_sz if order["side"] == "buy" else raw_ask_sz,
                                     "post_only": True,
                                     "client_oid": order["client_oid"],
                                     "effective_spread_bps": order.get("effective_spread_bps"),
@@ -2220,6 +2534,38 @@ def run_live(
                                         "error": send_status.get("error"),
                                     },
                                 )
+                            if margin_cooldown_ms > 0 and _is_insufficient_margin(
+                                send_status.get("error")
+                            ):
+                                log_event(
+                                    "margin_err",
+                                    {
+                                        "side": order["side"],
+                                        "action": "new",
+                                        "px": order.get("price"),
+                                        "sz": order.get("size"),
+                                        "error": send_status.get("error"),
+                                    },
+                                )
+                                now_m = _now_m()
+                                margin_cooldown_until_m = max(
+                                    margin_cooldown_until_m,
+                                    now_m + (margin_cooldown_ms / 1000.0),
+                                )
+                                remaining_ms = int((margin_cooldown_until_m - now_m) * 1000)
+                                log_event(
+                                    "margin_cooldown_set",
+                                    {
+                                        "side": order["side"],
+                                        "action": "new",
+                                        "error": send_status.get("error"),
+                                        "cooldown_ms": margin_cooldown_ms,
+                                        "cooldown_until_m": margin_cooldown_until_m,
+                                        "now_m": now_m,
+                                        "remaining_ms": remaining_ms,
+                                    },
+                                )
+                                log_account_state("margin_error", ts_ms, force=True)
                             if _is_rate_limit_error(send_status.get("error")):
                                 rate_limited = True
                         for order in new_orders:
@@ -2259,6 +2605,38 @@ def run_live(
                                 active_orders[order["side"]] = None
                             else:
                                 needs_open_orders_sync = True
+                            if margin_cooldown_ms > 0 and _is_insufficient_margin(
+                                send_status.get("error")
+                            ):
+                                log_event(
+                                    "margin_err",
+                                    {
+                                        "side": order["side"],
+                                        "action": "cancel",
+                                        "px": None,
+                                        "sz": None,
+                                        "error": send_status.get("error"),
+                                    },
+                                )
+                                now_m = _now_m()
+                                margin_cooldown_until_m = max(
+                                    margin_cooldown_until_m,
+                                    now_m + (margin_cooldown_ms / 1000.0),
+                                )
+                                remaining_ms = int((margin_cooldown_until_m - now_m) * 1000)
+                                log_event(
+                                    "margin_cooldown_set",
+                                    {
+                                        "side": order["side"],
+                                        "action": "cancel",
+                                        "error": send_status.get("error"),
+                                        "cooldown_ms": margin_cooldown_ms,
+                                        "cooldown_until_m": margin_cooldown_until_m,
+                                        "now_m": now_m,
+                                        "remaining_ms": remaining_ms,
+                                    },
+                                )
+                                log_account_state("margin_error", ts_ms, force=True)
                             if _is_rate_limit_error(send_status.get("error")):
                                 rate_limited = True
                         for order in cancel_orders:
@@ -2293,6 +2671,8 @@ def run_live(
                                     "side": order["side"],
                                     "px": order["price"],
                                     "sz": order["size"],
+                                    "requested_px": raw_bid_px if order["side"] == "buy" else raw_ask_px,
+                                    "requested_sz": raw_bid_sz if order["side"] == "buy" else raw_ask_sz,
                                     "post_only": True,
                                     "client_oid": order["client_oid"],
                                     "effective_spread_bps": order.get("effective_spread_bps"),
@@ -2326,6 +2706,14 @@ def run_live(
                                 active_orders[order["side"]] = None
                                 needs_open_orders_sync = True
                                 force_open_orders_sync = True
+                                log_event(
+                                    "replace_guard",
+                                    {
+                                        "side": order["side"],
+                                        "reason": "cannot_modify -> resync_and_new",
+                                        "exchange_id": order.get("exchange_id"),
+                                    },
+                                )
                             if _is_post_only_reject(send_status.get("error")):
                                 post_only_escape_ticks[order["side"]] = max(
                                     post_only_escape_ticks.get(order["side"], 0), 1
@@ -2338,6 +2726,38 @@ def run_live(
                                         "error": send_status.get("error"),
                                     },
                                 )
+                            if margin_cooldown_ms > 0 and _is_insufficient_margin(
+                                send_status.get("error")
+                            ):
+                                log_event(
+                                    "margin_err",
+                                    {
+                                        "side": order["side"],
+                                        "action": "replace",
+                                        "px": order.get("price"),
+                                        "sz": order.get("size"),
+                                        "error": send_status.get("error"),
+                                    },
+                                )
+                                now_m = _now_m()
+                                margin_cooldown_until_m = max(
+                                    margin_cooldown_until_m,
+                                    now_m + (margin_cooldown_ms / 1000.0),
+                                )
+                                remaining_ms = int((margin_cooldown_until_m - now_m) * 1000)
+                                log_event(
+                                    "margin_cooldown_set",
+                                    {
+                                        "side": order["side"],
+                                        "action": "replace",
+                                        "error": send_status.get("error"),
+                                        "cooldown_ms": margin_cooldown_ms,
+                                        "cooldown_until_m": margin_cooldown_until_m,
+                                        "now_m": now_m,
+                                        "remaining_ms": remaining_ms,
+                                    },
+                                )
+                                log_account_state("margin_error", ts_ms, force=True)
                             if _is_rate_limit_error(send_status.get("error")):
                                 rate_limited = True
                         for order in modify_orders:

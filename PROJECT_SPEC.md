@@ -471,6 +471,41 @@ Bフェーズ最小として、まずはこの4つだけで機械判定する。
 - Stage-0 の要件を満たし、**Bに入る準備が完了**
 - 次は run_report で「net が正か」「逆選好が強すぎないか」を機械的に判定する
 
+### 15.6.1 B評価準備（Phase②: marginエラー潰し）実験設計
+#### 固定（ベースラインと同一）
+- run duration: 900秒固定
+- 時間帯: 可能なら同じ枠（JSTで±30分以内）
+- それ以外の戦略パラメータは一切変更しない
+  - boost_spread_add_bps / extra_*_ticks / 価格距離ロジック / 送信間隔 / 置き直し条件など全部据え置き
+
+#### 変更（今回1点のみ）
+- `base_size: 0.01 → 0.005`
+
+#### 合格条件（900秒・機械判定）
+**必須（Fail判定）**
+- `Insufficient margin...` が 0〜1件（2件以上なら FAIL）
+
+**同時に守る（Fail判定）**
+- `Too many cumulative requests` == 0
+- `Cannot modify canceled or filled order` == 0
+- `taker_fills` == 0（makerのみ維持）
+- EXIT_CODE == 0（run_report → monitor まで完走）
+
+**参考（Failではないが見る）**
+- `post_only_reject <= sent の 5%`
+
+#### 失敗時の切り分け順（次に疑う順）
+1) `max_abs_position`（実質の建玉上限）
+2) 口座残高/利用可能証拠金の変動
+3) 同時発注・同時建玉（片側偏り）
+4) 最小注文/刻みの丸めで実サイズが上がっている
+
+#### 準備チェック（実走前）
+- `base_size` 以外は触らない（1ファイル1キー）
+- run_id か run_tag に実験IDを付与（例：`exp=B2_size005_only`）
+- MEMO に「固定条件 / 合格条件 / 変更点（base_sizeのみ）」を1ブロックで追記
+- ロールバックは `git checkout -- configs/strategy_prod_f15_live.yaml` で即戻せる状態にする
+
 ### 15.7 次にやること（優先順）
 #### 1) “基準run（baseline）” を3本作る
 目的は「いまの設定で net が安定してプラスか」を見ること。

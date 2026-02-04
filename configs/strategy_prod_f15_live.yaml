@@ -10,8 +10,8 @@ strategy:
   max_positions: 10
   extra_params:
     base_spread_bps: 0.15
-    boost_spread_add_bps: 6.0
-    base_size: 0.01
+    boost_spread_add_bps: 5.0
+    base_size: 0.005
     inventory_skew_bps: 0.2
     inventory_target: 0.0
     max_abs_position: 1.0
@@ -29,7 +29,9 @@ strategy:
     min_send_interval_ms: 5000
     rate_limit_backoff_ms: 60000
     rate_limit_backoff_max_ms: 600000
-    open_orders_sync_sec: 5
+    open_orders_sync_sec: 1
+    open_orders_fresh_ms: 2500
+    resync_min_interval_ms: 500
     order_status_check: true
     fills_sync_sec: 5
     fills_lookback_sec: 900

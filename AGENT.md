@@ -3,7 +3,7 @@
 - 変数名・関数名・API名などの識別子は英語のままでよい。
 - 出力は簡潔に。根拠を短く添える。
 - コードへ付与するコメントも日本語で。
-
+- 余計なお世辞、不必要な共感などは必要ない
 # プロジェクト概要
 - Poetry 管理の Python パッケージ `hlmm`。エントリポイントは `hlmm/cli/__init__.py`、`poetry run hlmm --help` または `python -m hlmm --help` で起動。
 - Python 3.11 以上を想定。開発依存に pytest のみ。
