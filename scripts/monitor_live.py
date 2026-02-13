@@ -304,7 +304,7 @@ def main() -> None:
     report_paths = [
         path
         for path in reports_root.glob("**/run_report.json")
-        if "_monitor" not in path.parts
+        if "_monitor" not in path.parts and path.parent != reports_root
     ]
 
     records: List[RunRecord] = []

@@ -1,11 +1,10 @@
-import json
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from hlmm.features import align_blocks, compute_features
-from hlmm.io import convert_raw_to_parquet, event_to_record, parse_event, save_events_parquet
+from hlmm.io import parse_event, save_events_parquet
 from hlmm.mm import run_mm_sim, run_replay
 from hlmm.research import build_dataset
 from hlmm.research.report import generate_report

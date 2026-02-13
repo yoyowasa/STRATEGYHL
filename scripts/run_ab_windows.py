@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import List, Sequence
 
 import pyarrow as pa
 import pyarrow.compute as pc

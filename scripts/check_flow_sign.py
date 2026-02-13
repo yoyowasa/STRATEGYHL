@@ -4,7 +4,7 @@ import argparse
 import math
 from collections import deque
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import pyarrow.parquet as pq

@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from hlmm.mm import MAX_DECIMALS, round_price
+from hlmm.mm import round_price
 
 
 @pytest.mark.parametrize(

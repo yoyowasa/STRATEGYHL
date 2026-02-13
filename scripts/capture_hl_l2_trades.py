@@ -5,7 +5,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 

@@ -41,7 +41,7 @@ class Candle:
     o: Decimal
     c: Decimal
     h: Decimal
-    l: Decimal
+    low: Decimal
     v: Decimal
     n: int
 
@@ -55,7 +55,7 @@ def _parse_candle(raw: Dict[str, Any]) -> Candle:
         o=_to_decimal(raw["o"]),
         c=_to_decimal(raw["c"]),
         h=_to_decimal(raw["h"]),
-        l=_to_decimal(raw["l"]),
+        low=_to_decimal(raw["l"]),
         v=_to_decimal(raw["v"]),
         n=int(raw.get("n", 0)),
     )
@@ -81,7 +81,7 @@ def derive_candles(base: List[Dict[str, Any]], target_interval: str) -> List[Dic
         o = bucket_items[0].o
         c = bucket_items[-1].c
         h = max(x.h for x in bucket_items)
-        l = min(x.l for x in bucket_items)
+        low = min(x.low for x in bucket_items)
         v = sum((x.v for x in bucket_items), Decimal("0"))
         n = sum(x.n for x in bucket_items)
         s = bucket_items[0].s
@@ -94,7 +94,7 @@ def derive_candles(base: List[Dict[str, Any]], target_interval: str) -> List[Dic
                 "o": _dec_to_str(o),
                 "c": _dec_to_str(c),
                 "h": _dec_to_str(h),
-                "l": _dec_to_str(l),
+                "l": _dec_to_str(low),
                 "v": _dec_to_str(v),
                 "n": n,
             }
@@ -134,4 +134,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

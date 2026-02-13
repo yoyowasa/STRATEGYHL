@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Optional
 
 import matplotlib
 import matplotlib.pyplot as plt

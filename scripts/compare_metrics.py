@@ -744,8 +744,6 @@ def _build_rows(
 
         return _get_path(load_metrics(run_id), key)
 
-    baseline = load_metrics(baseline_run_id)
-
     headers: List[str] = ["run_id"]
     for key in metrics:
         headers.append(key)
@@ -754,7 +752,6 @@ def _build_rows(
     rows: List[List[str]] = []
 
     for run_id in run_ids:
-        m = load_metrics(run_id)
         row: List[str] = [run_id]
         for key in metrics:
             v = metric_value(run_id, key)

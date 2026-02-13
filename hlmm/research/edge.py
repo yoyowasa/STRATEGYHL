@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
-import pyarrow as pa
 import pyarrow.parquet as pq
 
 matplotlib.use("Agg")  # 非GUI環境での描画
@@ -36,9 +34,9 @@ def _newey_west_se(series: np.ndarray, lag: int = 5) -> float:
     series = series - series.mean()
     var0 = np.dot(series, series) / n
     cov_sum = 0.0
-    for l in range(1, min(lag, n - 1) + 1):
-        weight = 1.0 - l / (lag + 1)
-        cov = np.dot(series[l:], series[:-l]) / n
+    for lag_i in range(1, min(lag, n - 1) + 1):
+        weight = 1.0 - lag_i / (lag + 1)
+        cov = np.dot(series[lag_i:], series[:-lag_i]) / n
         cov_sum += weight * cov
     var = var0 + 2 * cov_sum
     if var < 0:
