@@ -1,0 +1,41 @@
+mode: mm_live
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: prod_f15
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    base_spread_bps: 0.15
+    boost_spread_add_bps: 4.0
+    base_size: 0.005
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+    boost_when_abs_mid_ret_gt: 6.721220573650064e-05
+    boost_size_factor: 1.5
+    quote_only_in_boost: true
+    stop_max_abs_position: 0.1
+    stop_max_intraday_drawdown_usdc: -0.2
+    order_batch_sec: 0.1
+    disconnect_guard: true
+    post_only_guard_ticks: 2
+    extra_bid_ticks: 1
+    extra_ask_ticks: 2
+    min_quote_lifetime_ms: 30000
+    min_send_interval_ms: 5000
+    rate_limit_backoff_ms: 60000
+    rate_limit_backoff_max_ms: 600000
+    open_orders_sync_sec: 1
+    open_orders_fresh_ms: 2500
+    pre_send_book_max_age_ms: 500
+    resync_min_interval_ms: 500
+    order_status_check: true
+    fills_sync_sec: 5
+    fills_lookback_sec: 900
+    fills_max_pages: 3
+    fills_aggregate_by_time: false
+    fills_cursor_rewind_ms: 60000

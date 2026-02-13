@@ -1,0 +1,69 @@
+mode: mm_live
+paths:
+  data_dir: data
+  output_dir: outputs
+  log_dir: logs
+strategy:
+  name: prod_f15
+  risk_limit: 0.1
+  leverage: 1.0
+  max_positions: 10
+  extra_params:
+    base_spread_bps: 0.15
+    boost_spread_add_bps: 4.0
+    base_size: 0.005
+    inventory_skew_bps: 0.2
+    inventory_target: 0.0
+    max_abs_position: 1.0
+    boost_when_abs_mid_ret_gt: 6.721220573650064e-05
+    boost_size_factor: 1.5
+    quote_only_in_boost: true
+    stop_max_abs_position: 0.1
+    stop_max_intraday_drawdown_usdc: -0.2
+    order_batch_sec: 0.1
+    disconnect_guard: true
+    post_only_guard_ticks: 2
+    extra_bid_ticks: 1
+    extra_ask_ticks: 2
+    min_quote_lifetime_ms: 30000
+    min_send_interval_ms: 5000
+    rate_limit_backoff_ms: 60000
+    rate_limit_backoff_max_ms: 600000
+    open_orders_sync_sec: 1
+    open_orders_fresh_ms: 2500
+    pre_send_book_max_age_ms: 500
+    reject_backoff_enabled: true
+    reject_backoff_base_ms: 35000
+    reject_backoff_max_ms: 120000
+    reject_backoff_buffer_ticks: 1
+    reject_backoff_clear_accept_count: 2
+    reject_backoff_quiet_ms: 45000
+    resync_min_interval_ms: 500
+    dead_order_ttl_ms: 60000
+    order_status_check: true
+    fills_sync_sec: 5
+    fills_lookback_sec: 900
+    fills_max_pages: 3
+    fills_aggregate_by_time: false
+    fills_cursor_rewind_ms: 60000
+
+    risk_escape_enabled: true
+    risk_escape_age_ms_threshold: 450
+    risk_escape_latency_ms_threshold: 900
+    risk_escape_ticks: 1
+    risk_escape_age_high_latency_ms_threshold: 950
+    risk_escape_ticks_age_high_latency: 2
+
+    risk_escape_mode_age: additive
+    risk_escape_mode_latency: cancel_and_skip
+    risk_escape_mode_age_latency: cancel_and_skip
+
+    risk_escape_cancel_quiet_ms: 2000
+    global_lag_quiet_enabled: true
+    global_lag_quiet_latency_ms_threshold: 950
+    global_lag_quiet_recv_age_ms_threshold: 470
+    global_lag_quiet_ms: 2000
+    latency_cancel_all_fallback_enabled: true
+    latency_cancel_all_fallback_on_no_match: false
+    latency_cancel_all_cooldown_ms: 60000
+    latency_cancel_all_max_per_run: 2
